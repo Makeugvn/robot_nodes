@@ -24,6 +24,7 @@ install(PROGRAMS
   robot_nodes/vision_node.py
   robot_nodes/navigation_node.py
   robot_nodes/odometry_node.py
+  robot_nodes/state_machine_node.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ── Config & launch ───────────────────────────────────────

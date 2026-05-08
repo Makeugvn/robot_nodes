@@ -15,10 +15,14 @@ def generate_launch_description():
     with open(urdf_tmp, 'w') as f:
         f.write(robot_desc)
 
-    world_file = os.path.join(pkg, 'worlds', 'corridor.sdf')
+    world_file  = os.path.join(pkg, 'worlds', 'corridor.sdf')
+    slam_params = os.path.join(pkg, 'config', 'slam_params.yaml')
+    nav2_params = os.path.join(pkg, 'config', 'nav2_params.yaml')
+    map_file    = os.path.join(pkg, 'maps', 'map.yaml')
 
     return LaunchDescription([
 
+        # ── Robot state publisher ──────────────────────────
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
@@ -27,30 +31,34 @@ def generate_launch_description():
             output='screen'
         ),
 
+        # ── Static TF: base_link → laser ──────────────────
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['0.05', '0', '0.06',
+                       '0', '0', '0',
+                       'base_link', 'laser'],
+            name='base_to_laser_tf'
+        ),
+
+        # ── Gazebo ────────────────────────────────────────
         ExecuteProcess(
             cmd=['ign', 'gazebo', '-r', world_file],
             output='screen'
         ),
 
-        # Hanya satu spawn — dengan yaw 0
-        TimerAction(
-            period=3.0,
-            actions=[
-                ExecuteProcess(
-                    cmd=[
-                        'ros2', 'run', 'ros_ign_gazebo', 'create',
-                        '-name', 'robot',
-                        '-file', urdf_tmp,
-                        '-x', '-1.5',
-                        '-y', '0.0',
-                        '-z', '0.05',
-                        '-Y', '0.0',  # ← 90° menghadap sumbu Y (arah lorong)
-                    ],
-                    output='screen'
-                ),
-            ]
-        ),
+        # ── Spawn robot ───────────────────────────────────
+        TimerAction(period=3.0, actions=[
+            ExecuteProcess(
+                cmd=['ros2', 'run', 'ros_ign_gazebo', 'create',
+                     '-name', 'robot', '-file', urdf_tmp,
+                     '-x', '-1.5', '-y', '0.0', '-z', '0.05'],
+                output='screen'
+            ),
+        ]),
 
+        # ── Bridge Gazebo → ROS 2 ─────────────────────────
+        # /tf_static hanya SATU baris — tidak duplikat
         Node(
             package='ros_ign_bridge',
             executable='parameter_bridge',
@@ -62,22 +70,96 @@ def generate_launch_description():
                 '/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
                 '/tf_static@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
                 '/joint_states@sensor_msgs/msg/JointState[ignition.msgs.Model',
-                '/joint_states@sensor_msgs/msg/JointState[ignition.msgs.Model',
             ],
             output='screen'
         ),
 
+        # ── SLAM toolbox ──────────────────────────────────
         Node(
             package='slam_toolbox',
             executable='sync_slam_toolbox_node',
             name='slam_toolbox',
-            parameters=[
-                os.path.join(pkg, 'config', 'slam_params.yaml'),
-                {'use_sim_time': True}
-            ],
+            parameters=[slam_params, {'use_sim_time': True}],
             output='screen'
         ),
 
+        # ── Nav2 (delay 5s agar SLAM + odom siap) ─────────
+        TimerAction(period=5.0, actions=[
+            Node(
+                package='nav2_map_server',
+                executable='map_server',
+                name='map_server',
+                parameters=[nav2_params,
+                             {'yaml_filename': map_file,
+                              'use_sim_time': True}],
+                output='screen'
+            ),
+            Node(
+                package='nav2_amcl',
+                executable='amcl',
+                name='amcl',
+                parameters=[nav2_params, {'use_sim_time': True}],
+                output='screen'
+            ),
+            Node(
+                package='nav2_controller',
+                executable='controller_server',
+                name='controller_server',
+                parameters=[nav2_params, {'use_sim_time': True}],
+                output='screen'
+            ),
+            Node(
+                package='nav2_planner',
+                executable='planner_server',
+                name='planner_server',
+                parameters=[nav2_params, {'use_sim_time': True}],
+                output='screen'
+            ),
+            Node(
+                package='nav2_behaviors',
+                executable='behavior_server',
+                name='behavior_server',
+                parameters=[nav2_params, {'use_sim_time': True}],
+                output='screen'
+            ),
+            Node(
+                package='nav2_bt_navigator',
+                executable='bt_navigator',
+                name='bt_navigator',
+                parameters=[nav2_params, {'use_sim_time': True}],
+                output='screen'
+            ),
+            Node(
+                package='nav2_lifecycle_manager',
+                executable='lifecycle_manager',
+                name='lifecycle_manager_navigation',
+                parameters=[{
+                    'use_sim_time': True,
+                    'autostart': True,
+                    'node_names': [
+                        'map_server',
+                        'amcl',
+                        'controller_server',
+                        'planner_server',
+                        'behavior_server',
+                        'bt_navigator',
+                    ]
+                }],
+                output='screen'
+            ),
+        ]),
+
+        # ── State machine (delay 8s agar Nav2 siap) ───────
+        TimerAction(period=8.0, actions=[
+            Node(
+                package='robot_nodes',
+                executable='state_machine_node.py',
+                name='state_machine_node',
+                output='screen'
+            ),
+        ]),
+
+        # ── RViz2 ─────────────────────────────────────────
         Node(
             package='rviz2',
             executable='rviz2',
