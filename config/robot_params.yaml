@@ -1,0 +1,24 @@
+scan_publisher:
+  ros__parameters:
+    num_readings: 90
+    angle_min_deg: -90.0
+    angle_max_deg:  90.0
+    max_range: 12.0
+    min_range: 0.10
+    frame_id: laser
+
+odometry_node:
+  ros__parameters:
+    wheel_base: 0.15      # ukur jarak antar roda robotmu (meter)
+    wheel_radius: 0.033   # ukur radius roda (meter)
+    encoder_ticks: 20.0   # cek datasheet encoder motormu
+
+vision_node:
+  ros__parameters:
+    obstacle_h_low:  0
+    obstacle_s_low:  150
+    obstacle_v_low:  50
+    obstacle_h_high: 10
+    obstacle_s_high: 255
+    obstacle_v_high: 255
+    min_area_pixels: 500

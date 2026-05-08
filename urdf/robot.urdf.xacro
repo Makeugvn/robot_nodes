@@ -1,0 +1,188 @@
+<?xml version="1.0"?>
+<robot name="robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Parameter ukuran robot -->
+  <xacro:property name="base_length"  value="0.20"/>
+  <xacro:property name="base_width"   value="0.15"/>
+  <xacro:property name="base_height"  value="0.08"/>
+  <xacro:property name="wheel_radius" value="0.033"/>
+  <xacro:property name="wheel_width"  value="0.02"/>
+  <xacro:property name="track_width"  value="0.15"/>   <!-- jarak kiri-kanan -->
+  <xacro:property name="wheel_xoff"   value="0.07"/>   <!-- jarak depan-belakang dari center -->
+
+  <!-- Macro roda agar tidak copy-paste -->
+  <xacro:macro name="wheel" params="name x y">
+    <joint name="${name}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child  link="${name}"/>
+      <origin xyz="${x} ${y} 0" rpy="-1.5708 0 0"/>
+      <axis xyz="0 0 1"/>
+      <dynamics damping="0.1" friction="0.1"/>
+    </joint>
+
+    <link name="${name}">
+      <visual>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="black">
+          <color rgba="0.1 0.1 0.1 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.1"/>
+        <inertia ixx="0.001" iyy="0.001" izz="0.001"
+                 ixy="0"     ixz="0"     iyz="0"/>
+      </inertial>
+    </link>
+
+    <!-- Friction tinggi agar tidak slip -->
+    <gazebo reference="${name}">
+      <mu1>1.0</mu1>
+      <mu2>1.0</mu2>
+      <kp>1000000.0</kp>
+      <kd>1.0</kd>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- ── Base link ──────────────────────────────────────── -->
+  <link name="base_footprint"/>
+
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <!-- Z tepat setinggi jari-jari roda agar roda menyentuh ground -->
+    <origin xyz="0 0 ${wheel_radius}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0.2 0.4 0.8 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <!-- Inertia box: I = m/12 * (a²+b²) -->
+      <inertia ixx="0.00347" iyy="0.00413" izz="0.00680"
+               ixy="0"       ixz="0"       iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- ── 4 Roda ─────────────────────────────────────────── -->
+  <!--        nama            x              y            -->
+  <xacro:wheel name="front_left"  x=" ${wheel_xoff}"  y=" ${track_width/2}"/>
+  <xacro:wheel name="front_right" x=" ${wheel_xoff}"  y="-${track_width/2}"/>
+  <xacro:wheel name="rear_left"   x="-${wheel_xoff}"  y=" ${track_width/2}"/>
+  <xacro:wheel name="rear_right"  x="-${wheel_xoff}"  y="-${track_width/2}"/>
+
+  <!-- ── Laser frame ────────────────────────────────────── -->
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="laser"/>
+    <!-- Tengah atas body, rotasi 0 agar scan simetris -->
+    <origin xyz="0.05 0 ${base_height/2 + 0.02}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="laser">
+    <visual>
+      <geometry>
+        <cylinder radius="0.02" length="0.03"/>
+      </geometry>
+      <material name="red">
+        <color rgba="0.8 0.2 0.2 1.0"/>
+      </material>
+    </visual>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="0.0001" iyy="0.0001" izz="0.0001"
+               ixy="0"      ixz="0"      iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- ── Gazebo plugins ─────────────────────────────────── -->
+
+  <!-- Diff drive: gunakan roda depan sebagai penggerak utama -->
+  <gazebo>
+    <plugin filename="libignition-gazebo-diff-drive-system.so"
+            name="ignition::gazebo::systems::DiffDrive">
+      <!-- Kiri: depan + belakang dikopel -->
+      <left_joint>front_left_joint</left_joint>
+      <left_joint>rear_left_joint</left_joint>
+      <!-- Kanan: depan + belakang dikopel -->
+      <right_joint>front_right_joint</right_joint>
+      <right_joint>rear_right_joint</right_joint>
+      <wheel_separation>${track_width}</wheel_separation>
+      <wheel_radius>${wheel_radius}</wheel_radius>
+      <odom_publish_frequency>20</odom_publish_frequency>
+      <topic>/cmd_vel</topic>
+      <odom_topic>/odom</odom_topic>
+      <tf_topic>/tf</tf_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_footprint</child_frame_id>
+      <min_velocity>-1</min_velocity>
+      <max_velocity>1</max_velocity>
+      <min_acceleration>-3</min_acceleration>
+      <max_acceleration>3</max_acceleration>
+    </plugin>
+  </gazebo>
+
+  <!-- Joint state publisher -->
+  <gazebo>
+    <plugin filename="libignition-gazebo-joint-state-publisher-system.so"
+            name="ignition::gazebo::systems::JointStatePublisher">
+      <topic>/joint_states</topic>
+    </plugin>
+  </gazebo>
+
+  <!-- Laser scanner -->
+  <gazebo reference="laser">
+    <sensor name="laser_sensor" type="gpu_lidar">
+      <ignition_frame_id>laser</ignition_frame_id>
+      <always_on>true</always_on>
+      <visualize>true</visualize>
+      <update_rate>1.0</update_rate>
+      <topic>scan</topic>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>90</samples>
+            <resolution>1</resolution>
+            <min_angle>-1.5708</min_angle>
+            <max_angle>1.5708</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>1</samples>
+            <resolution>1</resolution>
+            <min_angle>0</min_angle>
+            <max_angle>0</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>0.10</min>
+          <max>12.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </lidar>
+    </sensor>
+  </gazebo>
+
+</robot>
