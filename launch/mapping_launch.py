@@ -15,7 +15,7 @@ def generate_launch_description():
     with open(urdf_tmp, 'w') as f:
         f.write(robot_desc)
 
-    world_file  = os.path.join(pkg, 'worlds', 'corridor.sdf')
+    world_file  = os.path.join(pkg, 'worlds', 'corridor_new.sdf')
     slam_params = os.path.join(pkg, 'config', 'slam_params.yaml')
     nav2_params = os.path.join(pkg, 'config', 'nav2_params.yaml')
     map_file    = os.path.join(pkg, 'maps', 'map.yaml')
@@ -52,13 +52,12 @@ def generate_launch_description():
             ExecuteProcess(
                 cmd=['ros2', 'run', 'ros_ign_gazebo', 'create',
                      '-name', 'robot', '-file', urdf_tmp,
-                     '-x', '-1.5', '-y', '0.0', '-z', '0.05'],
+                     '-x', '-0.8', '-y', '0.8', '-z', '0.05'],
                 output='screen'
             ),
         ]),
 
         # ── Bridge Gazebo → ROS 2 ─────────────────────────
-        # /tf_static hanya SATU baris — tidak duplikat
         Node(
             package='ros_ign_bridge',
             executable='parameter_bridge',
@@ -164,6 +163,7 @@ def generate_launch_description():
             package='rviz2',
             executable='rviz2',
             name='rviz2',
+            parameters=[{'use_sim_time': True}],
             output='screen'
         ),
     ])
