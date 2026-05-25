@@ -25,6 +25,8 @@ install(PROGRAMS
   robot_nodes/navigation_node.py
   robot_nodes/odometry_node.py
   robot_nodes/state_machine_node.py
+  robot_nodes/lidar_serial_node.py 
+  robot_nodes/lidar_serial_wifi.py 
   DESTINATION lib/${PROJECT_NAME})
 
 # ── Config & launch ───────────────────────────────────────
