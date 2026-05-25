@@ -30,9 +30,15 @@ WiFiUDP udp;
 #define PCLK_GPIO_NUM     22
 
 #define UDP_PACKET_MAX_SIZE 1430 
+#define FLASH_LED_PIN      4
 
 void setup() {
   Serial.begin(115200);
+
+  // --- NYALAKAN LED FLASH ---
+  pinMode(FLASH_LED_PIN, OUTPUT);
+  digitalWrite(FLASH_LED_PIN, HIGH); // Set ke HIGH untuk menyalakan, LOW untuk mematikan
+  // --------------------------
 
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -46,10 +52,10 @@ void setup() {
   config.pin_sscb_sda = SIOD_GPIO_NUM; config.pin_sscb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM; config.pin_reset = RESET_GPIO_NUM;
   
-  config.xclk_freq_hz = 16000000;    
+  config.xclk_freq_hz = 12000000;    
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = FRAMESIZE_QVGA; 
-  config.jpeg_quality = 20;          
+  config.jpeg_quality = 35;          
   config.fb_count = 1;
 
   // 1. Inisialisasi Kamera
