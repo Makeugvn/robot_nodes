@@ -45,8 +45,8 @@ def generate_launch_description():
             executable='lidar_serial_wifi.py',
             name='lidar_serial_node',
             parameters=[{
-                'serial_port': '/dev/ttyUSB0',
-                'baud_rate': 115200,
+                # 'serial_port': '/dev/ttyUSB0',
+                # 'baud_rate': 115200,
                 'frame_id': 'laser',
                 'range_min': 0.10,
                 'range_max': 12.0,

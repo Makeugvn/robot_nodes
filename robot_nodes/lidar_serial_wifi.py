@@ -1,31 +1,22 @@
 #!/usr/bin/env python3
 """
-lidar_serial_wifi.py
-=====================
-Terima data scan TFMini dari ESP32 via UDP WiFi,
-publish sebagai sensor_msgs/LaserScan ke /scan.
-
-Format UDP dari ESP32:
-  {"seq":N,"distances":[d0, d1, ..., d180]}
-  dimana d = jarak dalam cm, -1 = gagal baca
-
-Cara jalankan:
-  ros2 run robot_nodes lidar_serial_wifi.py
-
-Atau dengan parameter custom:
-  ros2 run robot_nodes lidar_serial_wifi.py \
-    --ros-args -p udp_port:=5005 -p range_max:=12.0
+lidar_wifi.py
+=============
+- Kirim perintah 'scan' ke ESP32 via UDP port 5005
+- Terima data scan dari ESP32 via UDP port 5006
+- Publish sebagai sensor_msgs/LaserScan ke /scan
 """
 
 import rclpy
+import time
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Bool
 
 import socket
 import json
 import math
 import threading
-import time
 
 
 class LidarWifiNode(Node):
@@ -33,133 +24,170 @@ class LidarWifiNode(Node):
         super().__init__('lidar_wifi_node')
 
         # ── Parameter ──────────────────────────────────────
-        self.declare_parameter('udp_port',        5005)
-        self.declare_parameter('udp_host',        '0.0.0.0')  # listen semua interface
+        self.declare_parameter('esp32_ip',        '10.42.93.127')
+        self.declare_parameter('port_cmd',         5005)  # kirim ke ESP32
+        self.declare_parameter('port_scan',        5006)  # terima dari ESP32
         self.declare_parameter('frame_id',        'laser')
-        self.declare_parameter('range_min',       0.10)   # meter
-        self.declare_parameter('range_max',       12.0)   # meter
-        self.declare_parameter('angle_min_deg',  -90.0)   # servo 0°   = kanan = -90°
-        self.declare_parameter('angle_max_deg',   90.0)   # servo 180° = kiri  = +90°
-        self.declare_parameter('scan_time',        5.4)   # detik per sweep (181 × 30ms)
-        self.declare_parameter('invert_scan',     False)  # balik arah jika sensor dipasang terbalik
+        self.declare_parameter('range_min',        0.10)
+        self.declare_parameter('range_max',        12.0)
+        self.declare_parameter('angle_min_deg',   -90.0)
+        self.declare_parameter('angle_max_deg',    90.0)
+        self.declare_parameter('scan_time',         7.5)
+        self.declare_parameter('timeout_sec',      15.0)
 
-        self.udp_port   = self.get_parameter('udp_port').value
-        self.udp_host   = self.get_parameter('udp_host').value
-        self.frame_id   = self.get_parameter('frame_id').value
-        self.range_min  = self.get_parameter('range_min').value
-        self.range_max  = self.get_parameter('range_max').value
-        self.scan_time  = self.get_parameter('scan_time').value
-        self.invert     = self.get_parameter('invert_scan').value
-
-        angle_min_deg = self.get_parameter('angle_min_deg').value
-        angle_max_deg = self.get_parameter('angle_max_deg').value
-        self.angle_min = math.radians(angle_min_deg)
-        self.angle_max = math.radians(angle_max_deg)
+        self.esp32_ip    = self.get_parameter('esp32_ip').value
+        self.port_cmd    = self.get_parameter('port_cmd').value
+        self.port_scan   = self.get_parameter('port_scan').value
+        self.frame_id    = self.get_parameter('frame_id').value
+        self.range_min   = self.get_parameter('range_min').value
+        self.range_max   = self.get_parameter('range_max').value
+        self.scan_time   = self.get_parameter('scan_time').value
+        self.timeout_sec = self.get_parameter('timeout_sec').value
+        self.angle_min   = math.radians(self.get_parameter('angle_min_deg').value)
+        self.angle_max   = math.radians(self.get_parameter('angle_max_deg').value)
 
         # ── Publisher ──────────────────────────────────────
-        self.pub = self.create_publisher(LaserScan, '/scan', 10)
+        self.pub_scan = self.create_publisher(LaserScan, '/scan', 10)
 
-        # ── UDP socket ─────────────────────────────────────
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((self.udp_host, self.udp_port))
-        self.sock.settimeout(1.0)  # timeout agar thread bisa berhenti
+        # ── Subscriber: trigger scan dari luar ────────────
+        # Publish True ke /trigger_scan untuk mulai scan
+        self.create_subscription(Bool, '/trigger_scan', self._trigger_cb, 10)
+
+        # ── Socket 1: KIRIM perintah ke ESP32 ─────────────
+        # Tidak perlu bind — hanya untuk sendto
+        self.sock_cmd = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        # ── Socket 2: TERIMA data scan dari ESP32 ─────────
+        # Bind ke port 5006 untuk mendengarkan data masuk
+        self.sock_scan = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock_scan.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock_scan.bind(('0.0.0.0', self.port_scan))
+        self.sock_scan.settimeout(1.0)
 
         self.get_logger().info(
-            f'UDP listener: {self.udp_host}:{self.udp_port}')
+            f'Kirim perintah  → ESP32 {self.esp32_ip}:{self.port_cmd}')
         self.get_logger().info(
-            f'range: {self.range_min}~{self.range_max}m | '
-            f'FOV: {angle_min_deg}°~{angle_max_deg}°')
+            f'Terima scan     ← port {self.port_scan}')
 
-        # ── Statistik ──────────────────────────────────────
-        self.scan_count   = 0
-        self.error_count  = 0
-        self.last_seq     = -1
-
-        # ── Thread penerima UDP ────────────────────────────
-        self._running = True
-        self._thread  = threading.Thread(target=self._udp_loop, daemon=True)
-        self._thread.start()
-
-        self.get_logger().info('lidar_wifi_node siap — menunggu data dari ESP32...')
-        self.get_logger().info(
-            f'Pastikan ESP32 mengirim ke IP laptop ini, port {self.udp_port}')
-        self._print_local_ip()
-
-    def _print_local_ip(self):
-        """Tampilkan IP laptop agar mudah dikonfigurasi di ESP32."""
+        # Tampilkan IP laptop
         import subprocess
         try:
-            result = subprocess.run(
-                ['hostname', '-I'], capture_output=True, text=True)
-            ips = result.stdout.strip()
-            self.get_logger().info(f'IP laptop ini: {ips}')
-            self.get_logger().info(
-                'Masukkan salah satu IP di atas ke LAPTOP_IP di kode ESP32')
+            r = subprocess.run(['hostname', '-I'], capture_output=True, text=True)
+            self.get_logger().info(f'IP laptop: {r.stdout.strip()}')
         except Exception:
             pass
 
-    def _udp_loop(self):
-        """Thread yang terus-menerus menerima paket UDP dari ESP32."""
+        # ── State ──────────────────────────────────────────
+        self.scan_count    = 0
+        self.last_seq      = -1
+        self.waiting_data  = False
+        self.trigger_time  = None
+        self.packets_recv  = 0   # ESP32 kirim 2 paket per scan (maju + balik)
+
+        # ── Thread terima scan ─────────────────────────────
+        self._running = True
+        self._scan_thread = threading.Thread(
+            target=self._scan_recv_loop, daemon=True)
+        self._scan_thread.start()
+
+        # ── Timer cek timeout ──────────────────────────────
+        self.create_timer(1.0, self._check_timeout)
+
+        self.get_logger().info('Node siap. Publish True ke /trigger_scan untuk scan.')
+
+    # ── Kirim perintah "scan" ke ESP32 ────────────────────
+    def send_scan_command(self):
+        try:
+            self.sock_cmd.sendto(b'scan\n', (self.esp32_ip, self.port_cmd))
+            self.waiting_data  = True
+            self.trigger_time  = time.time()
+            self.packets_recv  = 0
+            self.get_logger().info(
+                f'→ Perintah "scan" dikirim ke {self.esp32_ip}:{self.port_cmd}')
+        except Exception as e:
+            self.get_logger().error(f'Gagal kirim perintah: {e}')
+
+    # ── Callback trigger dari topic ────────────────────────
+    def _trigger_cb(self, msg: Bool):
+        if msg.data:
+            self.send_scan_command()
+
+    # ── Cek timeout — kirim ulang kalau tidak ada respons ──
+    def _check_timeout(self):
+        if not self.waiting_data:
+            return
+        if self.trigger_time and (time.time() - self.trigger_time > self.timeout_sec):
+            self.get_logger().warn(
+                f'Timeout {self.timeout_sec}s! Kirim ulang perintah scan...')
+            self.send_scan_command()
+
+    # ── Thread: terima data scan dari ESP32 ───────────────
+    def _scan_recv_loop(self):
+        self.get_logger().info(
+            f'Thread scan receiver jalan, listen port {self.port_scan}')
+
         while self._running:
             try:
-                data, addr = self.sock.recvfrom(2048)
+                data, addr = self.sock_scan.recvfrom(2048)
             except socket.timeout:
                 continue
             except Exception as e:
                 if self._running:
-                    self.get_logger().warn(f'UDP error: {e}')
+                    self.get_logger().warn(f'UDP recv error: {e}')
                 continue
 
+            # Parse JSON
             try:
                 payload = json.loads(data.decode('utf-8'))
-            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                self.error_count += 1
+            except Exception as e:
                 self.get_logger().warn(
-                    f'JSON parse error [{self.error_count}]: {e}')
+                    f'JSON error: {e} | raw: {data[:60]}')
                 continue
 
             if 'distances' not in payload:
-                self.get_logger().warn('Paket tidak punya field "distances"')
+                self.get_logger().warn('Paket tidak punya field distances')
                 continue
 
-            # Cek sequence untuk deteksi paket hilang
+            # Cek sequence
             seq = payload.get('seq', -1)
             if self.last_seq >= 0 and seq > 0:
-                dropped = seq - self.last_seq - 1
-                if dropped > 0:
+                lost = seq - self.last_seq - 1
+                if lost > 0:
                     self.get_logger().warn(
-                        f'{dropped} paket hilang (seq {self.last_seq}→{seq})')
+                        f'{lost} paket hilang (seq {self.last_seq}→{seq})')
             self.last_seq = seq
+
+            # Hitung paket — ESP32 kirim 2x per scan (maju + balik)
+            self.packets_recv += 1
+            if self.packets_recv == 1:
+                # Paket pertama: reset timeout agar tidak kirim ulang
+                self.trigger_time = time.time()
+                self.get_logger().info('Paket pertama diterima (sweep maju)')
+            elif self.packets_recv >= 2:
+                # Paket kedua: scan selesai
+                self.waiting_data = False
+                self.packets_recv = 0
+                self.get_logger().info('Scan selesai (2 paket diterima)')
 
             self._publish_scan(payload['distances'], addr[0])
 
+    # ── Publish LaserScan ─────────────────────────────────
     def _publish_scan(self, distances_cm: list, sender_ip: str):
-        """Konversi array jarak cm ke LaserScan dan publish."""
         n = len(distances_cm)
-
         if n < 2:
-            self.get_logger().warn(f'Data terlalu pendek: {n} titik')
             return
 
-        # Balik urutan jika sensor dipasang terbalik
-        if self.invert:
-            distances_cm = list(reversed(distances_cm))
-
-        # ── Bangun LaserScan ────────────────────────────────
-        msg               = LaserScan()
-        msg.header.stamp  = self.get_clock().now().to_msg()
+        msg                 = LaserScan()
+        msg.header.stamp    = self.get_clock().now().to_msg()
         msg.header.frame_id = self.frame_id
-
-        msg.angle_min      = self.angle_min
-        msg.angle_max      = self.angle_max
+        msg.angle_min       = self.angle_min
+        msg.angle_max       = self.angle_max
         msg.angle_increment = (self.angle_max - self.angle_min) / (n - 1)
-        msg.range_min      = self.range_min
-        msg.range_max      = self.range_max
-        msg.scan_time      = self.scan_time
-        msg.time_increment = self.scan_time / (n - 1)
+        msg.range_min       = self.range_min
+        msg.range_max       = self.range_max
+        msg.scan_time       = self.scan_time
+        msg.time_increment  = self.scan_time / (n - 1)
 
-        # ── Konversi cm → meter ─────────────────────────────
         ranges = []
         valid  = 0
         for d_cm in distances_cm:
@@ -167,34 +195,32 @@ class LidarWifiNode(Node):
                 ranges.append(float('inf'))
             else:
                 d_m = d_cm / 100.0
-                if d_m < self.range_min or d_m > self.range_max:
-                    ranges.append(float('inf'))
-                else:
+                if self.range_min <= d_m <= self.range_max:
                     ranges.append(d_m)
                     valid += 1
+                else:
+                    ranges.append(float('inf'))
 
         msg.ranges = ranges
-
-        self.pub.publish(msg)
+        self.pub_scan.publish(msg)
         self.scan_count += 1
 
-        # Log ringkas setiap scan
-        valid_ranges = [r for r in ranges if not math.isinf(r)]
-        min_r = min(valid_ranges) if valid_ranges else float('nan')
-        max_r = max(valid_ranges) if valid_ranges else float('nan')
+        valid_r = [r for r in ranges if not math.isinf(r)]
+        min_r   = min(valid_r) if valid_r else float('nan')
+        max_r   = max(valid_r) if valid_r else float('nan')
 
         self.get_logger().info(
-            f'Scan #{self.scan_count} dari {sender_ip} | '
-            f'{valid}/{n} titik valid | '
+            f'✓ Scan #{self.scan_count} dari {sender_ip} | '
+            f'{valid}/{n} valid | '
             f'min={min_r:.2f}m max={max_r:.2f}m',
-            throttle_duration_sec=2.0
+            throttle_duration_sec=1.0
         )
 
     def destroy_node(self):
         self._running = False
-        self._thread.join(timeout=2.0)
-        self.sock.close()
-        self.get_logger().info('UDP socket ditutup')
+        self._scan_thread.join(timeout=2.0)
+        self.sock_scan.close()
+        self.sock_cmd.close()
         super().destroy_node()
 
 
@@ -205,9 +231,6 @@ def main(args=None):
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass
-    except Exception as e:
-        print(f'Error: {e}')
-        raise
     finally:
         rclpy.shutdown()
 
