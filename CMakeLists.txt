@@ -27,6 +27,7 @@ install(PROGRAMS
   robot_nodes/state_machine_node.py
   robot_nodes/lidar_serial_node.py 
   robot_nodes/lidar_serial_wifi.py 
+  robot_nodes/rplidar_wifi.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ── Config & launch ───────────────────────────────────────

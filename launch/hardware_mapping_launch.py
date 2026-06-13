@@ -42,7 +42,7 @@ def generate_launch_description():
         # ── Lidar serial node ──────────────────────────────
         Node(
             package='robot_nodes',
-            executable='lidar_serial_wifi.py',
+            executable='rplidar_wifi.py',
             name='lidar_serial_node',
             parameters=[{
                 # 'serial_port': '/dev/ttyUSB0',
