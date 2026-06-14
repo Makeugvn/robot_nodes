@@ -1,118 +1,551 @@
 /*
- * esp32_rplidar.ino
- * =================
- * RPLidar C1 via UART2 → kirim data scan 360° ke laptop via UDP port 5006
- * Kontrol ON/OFF RPLidar via UDP port 5005
- * Terima cmd_vel via UDP port 5007
- * Kirim IMU + encoder via UDP port 5008
+ * esp32_rplidar_l298n.ino
+ * ========================================================================
+ * Versi merge: L298N library + PWM via UDP + odometri + IMU + magnetometer
  *
- * Wiring RPLidar C1:
- *   RPLidar TX  → ESP32 GPIO16 (RX2)
- *   RPLidar RX  → ESP32 GPIO17 (TX2)
- *   RPLidar VCC → 5V
- *   RPLidar GND → GND
+ * Perubahan dari versi sebelumnya:
+ *   - Motor dikendalikan via library L298N (bukan manual ledcWrite)
+ *   - Input PWM dari UDP cmd_vel: {"lx":0.5,"az":0.0,"pwm":180}
+ *   - PWM default 200 jika field "pwm" tidak ada di paket
+ *   - Semua fitur lain tetap: RPLidar C1, MPU6050, HMC5883L, encoder, odom
+ *
+ * Wiring:
+ *   RPLidar TX   → GPIO16 (RX2)
+ *   RPLidar RX   → GPIO17 (TX2)
+ *   MPU6050 SDA  → GPIO21
+ *   MPU6050 SCL  → GPIO22
+ *   HMC5883L SDA → GPIO21 (shared I2C bus)
+ *   HMC5883L SCL → GPIO22 (shared I2C bus)
+ *   Encoder A    → GPIO34 (input only)
+ *   Encoder B    → GPIO35 (input only)
+ *   Motor A EN   → GPIO27
+ *   Motor A IN1  → GPIO25
+ *   Motor A IN2  → GPIO26
+ *   Motor B EN   → GPIO14
+ *   Motor B IN1  → GPIO32
+ *   Motor B IN2  → GPIO33
+ *
+ * Dependensi library:
+ *   - L298N by Andrea Lombardo (install via Arduino Library Manager)
  */
 
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <L298N.h>
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
 
 // ═══════════════════════════════════════════════════════════
-//  KONFIGURASI
+//  KONFIGURASI JARINGAN
 // ═══════════════════════════════════════════════════════════
-const char* WIFI_SSID  = "SENDANG REJEKI";
-const char* WIFI_PASS  = "HELLY123";
-const char* LAPTOP_IP  = "192.168.100.160";
+const char* WIFI_SSID = "SENDANG REJEKI";
+const char* WIFI_PASS = "HELLY123";
+const char* LAPTOP_IP = "192.168.100.161";
+IPAddress targetIP(192, 168, 100, 161);
 
-#define PORT_LIDAR    5005
-#define PORT_SCAN     5006
-#define PORT_CMDVEL   5007
-#define PORT_SENSOR   5008
+#define PORT_LIDAR   5005
+#define PORT_SCAN    5006
+#define PORT_CMDVEL  5007
+#define PORT_SENSOR  5050
 
-// ── RPLidar C1 ────────────────────────────────────────────
-#define RPLIDAR_RX_PIN       16
-#define RPLIDAR_TX_PIN       17
-#define RPLIDAR_BAUDRATE     460800
+// ═══════════════════════════════════════════════════════════
+//  RPLIDAR C1
+// ═══════════════════════════════════════════════════════════
+#define RPLIDAR_RX_PIN      16
+#define RPLIDAR_TX_PIN      17
+#define RPLIDAR_BAUDRATE    460800
+#define RPLIDAR_CMD_SYNC    0xA5
+#define RPLIDAR_CMD_SCAN    0x20
+#define RPLIDAR_CMD_STOP    0x25
+#define RPLIDAR_CMD_RESET   0x40
+#define RPLIDAR_CMD_HEALTH  0x52
+#define RPLIDAR_SYNC1       0xA5
+#define RPLIDAR_SYNC2       0x5A
+#define RPLIDAR_PKT_SIZE    5
+#define HALF_SCAN           180
 
-#define RPLIDAR_CMD_SYNC_BYTE   0xA5
-#define RPLIDAR_CMD_SCAN        0x20
-#define RPLIDAR_CMD_STOP        0x25
-#define RPLIDAR_CMD_RESET       0x40
-#define RPLIDAR_CMD_GET_HEALTH  0x52
+// ═══════════════════════════════════════════════════════════
+//  MOTOR L298N (via library)
+// ═══════════════════════════════════════════════════════════
+#define MOTOR_A_IN1  4
+#define MOTOR_A_IN2  5
+#define MOTOR_A_EN   27
+#define MOTOR_B_IN1  32
+#define MOTOR_B_IN2  33
+#define MOTOR_B_EN   14
 
-#define RPLIDAR_RESP_SYNC1      0xA5
-#define RPLIDAR_RESP_SYNC2      0x5A
-#define RPLIDAR_SCAN_PACKET_SIZE 5
+// Instance library L298N
+L298N motorA(MOTOR_A_EN, MOTOR_A_IN1, MOTOR_A_IN2);
+L298N motorB(MOTOR_B_EN, MOTOR_B_IN1, MOTOR_B_IN2);
 
-// ── Motor L298N ───────────────────────────────────────────
-#define MOTOR_A_IN1   25
-#define MOTOR_A_IN2   26
-#define MOTOR_A_EN    27
-#define MOTOR_B_IN1   32
-#define MOTOR_B_IN2   33
-#define MOTOR_B_EN    14
+// Parameter robot
+#define MAX_SPEED_MS    0.5f   // m/s maksimum
+#define WHEEL_BASE      0.15f  // meter, jarak antar roda
 
-#define PWM_FREQ      1000
-#define PWM_RES       8
+// PWM default dan batas
+#define PWM_DEFAULT     200    // 0–255
+#define PWM_MIN         60     // batas bawah agar motor bergerak
+#define PWM_MAX         255
 
-// ── Encoder ───────────────────────────────────────────────
+// Tambah variabel timing terpisah
+unsigned long lastScanSend   = 0;
+// unsigned long lastSensorSend = 0;
+#define SCAN_MIN_INTERVAL_MS    120   // minimal jarak antar scan UDP
+#define SENSOR_INTERVAL_MS       500
+
+// PWM aktif saat ini (bisa diubah via UDP)
+uint8_t currentPwm = PWM_DEFAULT;
+
+// ═══════════════════════════════════════════════════════════
+//  ENCODER
+// ═══════════════════════════════════════════════════════════
 #define ENCODER_A_PIN  34
 #define ENCODER_B_PIN  35
 
-// ── IMU MPU6050 ───────────────────────────────────────────
+volatile long encTicksA = 0;
+volatile long encTicksB = 0;
+long prevTicksA = 0;
+long prevTicksB = 0;
+
+#define WHEEL_RADIUS_M    0.033f
+#define ENCODER_TPR       20.0f
+#define METER_PER_TICK    (2.0f * M_PI * WHEEL_RADIUS_M / ENCODER_TPR)
+
+// ═══════════════════════════════════════════════════════════
+//  MPU6050
+// ═══════════════════════════════════════════════════════════
 #define MPU6050_ADDR   0x68
-#define PWR_MGMT_1     0x6B
-#define ACCEL_XOUT_H   0x3B
+#define MPU_PWR_MGMT   0x6B
+#define MPU_ACCEL_CFG  0x1C
+#define MPU_GYRO_CFG   0x1B
+#define MPU_ACCEL_OUT  0x3B
+#define MPU_GYRO_OUT   0x43
 
-#define MAX_SPEED_MS   0.5f
-#define WHEEL_BASE     0.15f
-#define HALF_SCAN      180
-#define CMDVEL_TIMEOUT_MS  500
+float imuAccX = 0, imuAccY = 0, imuAccZ = 0;
+float imuGyrX = 0, imuGyrY = 0, imuGyrZ = 0;
+float gyroOffsetX = 0, gyroOffsetY = 0, gyroOffsetZ = 0;
+#define CALIB_SAMPLES  200
+
+float yawAngle = 0.0f;
+unsigned long lastImuTime = 0;
+
+float fusedYaw   = 0.0f;
+float fusedRoll  = 0.0f;
+float fusedPitch = 0.0f;
+#define COMP_FILTER_ALPHA   0.95f
+#define MAG_DECLINATION_RAD 0.021f
+bool fusionInitialized = false;
+
+// ═══════════════════════════════════════════════════════════
+//  HMC5883L
+// ═══════════════════════════════════════════════════════════
+#define HMC5883L_ADDR     0x2C
+#define HMC_REG_CONFIG_A  0x00
+#define HMC_REG_CONFIG_B  0x01
+#define HMC_REG_MODE      0x02
+#define HMC_REG_DATA_X_H  0x03
+
+float magX = 0, magY = 0, magZ = 0;
+float magOffsetX = 0.0f, magOffsetY = 0.0f, magOffsetZ = 0.0f;
+float magHeading = 0.0f;
+
+// ═══════════════════════════════════════════════════════════
+//  ODOMETRI
+// ═══════════════════════════════════════════════════════════
+float odomX     = 0.0f;
+float odomY     = 0.0f;
+float odomTheta = 0.0f;
+float odomVx    = 0.0f;
+float odomWz    = 0.0f;
+#define ODOM_INTERVAL_MS  50
+
+// ═══════════════════════════════════════════════════════════
+//  UDP + TIMING
+// ═══════════════════════════════════════════════════════════
+WiFiUDP udpLidar, udpScan, udpCmdVel, udpSensor;
+
+unsigned long lastSensorSend = 0;
+unsigned long lastCmdVelTime = 0;
 #define SENSOR_INTERVAL_MS  50
+#define CMDVEL_TIMEOUT_MS   500
 
-// ═══════════════════════════════════════════════════════════
-//  VARIABEL GLOBAL
-// ═══════════════════════════════════════════════════════════
+float cmdLinear  = 0.0f;
+float cmdAngular = 0.0f;
+
+// RPLidar
 bool     lidarRunning  = false;
 bool     lidarScanning = false;
 uint32_t scanSeq       = 0;
-
 uint16_t scanBuffer[360];
 bool     scanValid[360];
 int      sampleCount = 0;
-
-WiFiUDP udpLidar;
-WiFiUDP udpScan;
-WiFiUDP udpCmdVel;
-WiFiUDP udpSensor;
-
-volatile long encTicksA = 0;
-volatile long encTicksB = 0;
-
-float gyroZ  = 0.0f;
-float accelX = 0.0f;
-float accelY = 0.0f;
-
-float cmdLinear    = 0.0f;
-float cmdAngular   = 0.0f;
-unsigned long lastCmdVelTime = 0;
-unsigned long lastSensorSend = 0;
-
-char jsonBuf[1600];
+char     jsonBuf[1600];
 
 // ═══════════════════════════════════════════════════════════
 //  ISR ENCODER
 // ═══════════════════════════════════════════════════════════
-void IRAM_ATTR isrEncoderA() { encTicksA++; }
-void IRAM_ATTR isrEncoderB() { encTicksB++; }
+void IRAM_ATTR isrEncoderA() {
+  if      (digitalRead(MOTOR_A_IN1) == HIGH && digitalRead(MOTOR_A_IN2) == LOW)  encTicksA++;
+  else if (digitalRead(MOTOR_A_IN1) == LOW  && digitalRead(MOTOR_A_IN2) == HIGH) encTicksA--;
+}
+
+void IRAM_ATTR isrEncoderB() {
+  if      (digitalRead(MOTOR_B_IN1) == HIGH && digitalRead(MOTOR_B_IN2) == LOW)  encTicksB++;
+  else if (digitalRead(MOTOR_B_IN1) == LOW  && digitalRead(MOTOR_B_IN2) == HIGH) encTicksB--;
+}
 
 // ═══════════════════════════════════════════════════════════
-//  RPLidar
+//  MOTOR — via L298N library
+//  speed: -1.0 .. +1.0
+//  PWM dihitung dari |speed| × currentPwm, di-clamp ke PWM_MIN..PWM_MAX
+// ═══════════════════════════════════════════════════════════
+void setMotorA(float speed) {
+  speed = constrain(speed, -1.0f, 1.0f);
+  if (fabsf(speed) <= 0.02f) {
+    motorA.stop();
+    return;
+  }
+  // Hitung PWM proporsional: skala speed terhadap currentPwm
+  // Misal speed=1.0 → PWM=currentPwm, speed=0.5 → PWM=currentPwm/2 (tapi min PWM_MIN)
+  uint8_t pwm = (uint8_t)constrain(
+    (int)(fabsf(speed) * currentPwm), PWM_MIN, PWM_MAX);
+  motorA.setSpeed(pwm);
+  if (speed > 0) motorA.forward();
+  else           motorA.backward();
+
+  // Serial.printf("[MTR-A] speed=%.2f pwm=%d dir=%s\n",
+  //   speed, pwm, speed > 0 ? "FWD" : "BWD");
+}
+
+void setMotorB(float speed) {
+  speed = constrain(speed, -1.0f, 1.0f);
+  if (fabsf(speed) <= 0.02f) {
+    motorB.stop();
+    return;
+  }
+  uint8_t pwm = (uint8_t)constrain(
+    (int)(fabsf(speed) * currentPwm), PWM_MIN, PWM_MAX);
+  motorB.setSpeed(pwm);
+  if (speed > 0) motorB.forward();
+  else           motorB.backward();
+
+  // Serial.printf("[MTR-B] speed=%.2f pwm=%d dir=%s\n",
+  //   speed, pwm, speed > 0 ? "FWD" : "BWD");
+}
+
+void stopMotors() {
+  motorA.stop();
+  motorB.stop();
+}
+
+/*
+ * applyCmdVel — differential drive
+ * linear  : m/s (+maju, -mundur)
+ * angular : rad/s (+kiri, -kanan)
+ *
+ * Jika salah satu roda berputar terbalik saat maju,
+ * balik tanda v_left atau v_right di sini:
+ *   v_left  = -v_left;   // balik Motor A
+ *   v_right = -v_right;  // balik Motor B
+ */
+void applyCmdVel(float linear, float angular) {
+  float v_left  = (linear - angular * WHEEL_BASE / 2.0f) / MAX_SPEED_MS;
+  float v_right = (linear + angular * WHEEL_BASE / 2.0f) / MAX_SPEED_MS;
+
+  // Serial.printf("[CMD] lin=%.3f ang=%.3f → vL=%.3f vR=%.3f pwm=%d\n",
+  //   linear, angular, v_left, v_right, currentPwm);
+
+  setMotorA(v_left);
+  setMotorB(v_right);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MPU6050
+// ═══════════════════════════════════════════════════════════
+bool initMPU6050() {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(MPU_PWR_MGMT);
+  Wire.write(0x00);
+  if (Wire.endTransmission(true) != 0) {
+    Serial.println("[IMU] MPU6050 tidak ditemukan!");
+    return false;
+  }
+  delay(100);
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(MPU_ACCEL_CFG);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(MPU_GYRO_CFG);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+  delay(50);
+  Serial.println("[IMU] MPU6050 OK");
+  return true;
+}
+
+void readMPU6050Raw(int16_t& ax, int16_t& ay, int16_t& az,
+                    int16_t& gx, int16_t& gy, int16_t& gz) {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(MPU_ACCEL_OUT);
+  Wire.endTransmission(false);
+  Wire.requestFrom((uint8_t)MPU6050_ADDR, (uint8_t)14, (uint8_t)true);
+  if (Wire.available() < 14) return;
+  ax = (Wire.read() << 8) | Wire.read();
+  ay = (Wire.read() << 8) | Wire.read();
+  az = (Wire.read() << 8) | Wire.read();
+  Wire.read(); Wire.read();  // temp
+  gx = (Wire.read() << 8) | Wire.read();
+  gy = (Wire.read() << 8) | Wire.read();
+  gz = (Wire.read() << 8) | Wire.read();
+}
+
+void calibrateGyro() {
+  Serial.print("[IMU] Kalibrasi gyro (robot harus diam)");
+  double sumX = 0, sumY = 0, sumZ = 0;
+  for (int i = 0; i < CALIB_SAMPLES; i++) {
+    int16_t ax, ay, az, gx, gy, gz;
+    readMPU6050Raw(ax, ay, az, gx, gy, gz);
+    sumX += gx; sumY += gy; sumZ += gz;
+    delay(5);
+    if (i % 50 == 0) Serial.print(".");
+  }
+  gyroOffsetX = sumX / CALIB_SAMPLES;
+  gyroOffsetY = sumY / CALIB_SAMPLES;
+  gyroOffsetZ = sumZ / CALIB_SAMPLES;
+  Serial.printf("\n[IMU] Gyro offset: X=%.1f Y=%.1f Z=%.1f\n",
+    gyroOffsetX, gyroOffsetY, gyroOffsetZ);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  HMC5883L
+// ═══════════════════════════════════════════════════════════
+bool initHMC5883L() {
+  Wire.beginTransmission(HMC5883L_ADDR);
+  Wire.write(HMC_REG_CONFIG_A);
+  Wire.write(0x70);
+  if (Wire.endTransmission(true) != 0) {
+    Serial.println("[MAG] HMC5883L tidak ditemukan!");
+    return false;
+  }
+  Wire.beginTransmission(HMC5883L_ADDR);
+  Wire.write(HMC_REG_CONFIG_B);
+  Wire.write(0x20);
+  Wire.endTransmission(true);
+  Wire.beginTransmission(HMC5883L_ADDR);
+  Wire.write(HMC_REG_MODE);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+  delay(100);
+  Serial.println("[MAG] HMC5883L OK");
+  return true;
+}
+
+void readHMC5883L() {
+  Wire.beginTransmission(HMC5883L_ADDR);
+  Wire.write(HMC_REG_DATA_X_H);
+  Wire.endTransmission(false);
+  Wire.requestFrom((uint8_t)HMC5883L_ADDR, (uint8_t)6, (uint8_t)true);
+  if (Wire.available() < 6) return;
+  int16_t rawX = (Wire.read() << 8) | Wire.read();
+  int16_t rawZ = (Wire.read() << 8) | Wire.read();
+  int16_t rawY = (Wire.read() << 8) | Wire.read();
+  magX = (rawX - magOffsetX) / 1090.0f;
+  magY = (rawY - magOffsetY) / 1090.0f;
+  magZ = (rawZ - magOffsetZ) / 1090.0f;
+  magHeading = atan2(magY, magX);
+  if (magHeading < 0) magHeading += 2.0f * M_PI;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SENSOR FUSION
+// ═══════════════════════════════════════════════════════════
+void updateSensorFusion() {
+  unsigned long now = millis();
+  float dt = (lastImuTime > 0) ? (now - lastImuTime) / 1000.0f : 0.01f;
+  lastImuTime = now;
+  if (dt <= 0 || dt > 0.1f) dt = 0.01f;
+
+  int16_t ax, ay, az, gx, gy, gz;
+  readMPU6050Raw(ax, ay, az, gx, gy, gz);
+
+  imuAccX = ax / 16384.0f * 9.81f;
+  imuAccY = ay / 16384.0f * 9.81f;
+  imuAccZ = az / 16384.0f * 9.81f;
+  imuGyrX = (gx - gyroOffsetX) / 131.0f * (M_PI / 180.0f);
+  imuGyrY = (gy - gyroOffsetY) / 131.0f * (M_PI / 180.0f);
+  imuGyrZ = (gz - gyroOffsetZ) / 131.0f * (M_PI / 180.0f);
+
+  float accRoll  = atan2f(imuAccY, imuAccZ);
+  float accPitch = atan2f(-imuAccX, sqrtf(imuAccY*imuAccY + imuAccZ*imuAccZ));
+
+  readHMC5883L();
+
+  float cosRoll  = cosf(fusedRoll);
+  float sinRoll  = sinf(fusedRoll);
+  float cosPitch = cosf(fusedPitch);
+  float sinPitch = sinf(fusedPitch);
+
+  float magXcomp = magX * cosPitch + magY * sinRoll * sinPitch + magZ * cosRoll * sinPitch;
+  float magYcomp = magY * cosRoll  - magZ * sinRoll;
+
+  float magYaw = atan2f(-magYcomp, magXcomp) + MAG_DECLINATION_RAD;
+  if (magYaw < 0)            magYaw += 2.0f * M_PI;
+  if (magYaw > 2.0f * M_PI)  magYaw -= 2.0f * M_PI;
+  magHeading = magYaw;
+
+  if (!fusionInitialized) {
+    fusedYaw   = magYaw;
+    fusedRoll  = accRoll;
+    fusedPitch = accPitch;
+    fusionInitialized = true;
+    Serial.printf("[FUSION] Init: yaw=%.2f°\n", fusedYaw * 180.0f / M_PI);
+    return;
+  }
+
+  fusedRoll  = COMP_FILTER_ALPHA * (fusedRoll  + imuGyrX * dt) + (1.0f - COMP_FILTER_ALPHA) * accRoll;
+  fusedPitch = COMP_FILTER_ALPHA * (fusedPitch + imuGyrY * dt) + (1.0f - COMP_FILTER_ALPHA) * accPitch;
+
+  float gyroYaw = fusedYaw + imuGyrZ * dt;
+  float diff    = magYaw - gyroYaw;
+  while (diff >  M_PI) diff -= 2.0f * M_PI;
+  while (diff < -M_PI) diff += 2.0f * M_PI;
+  fusedYaw = gyroYaw + (1.0f - COMP_FILTER_ALPHA) * diff;
+  while (fusedYaw < 0)           fusedYaw += 2.0f * M_PI;
+  while (fusedYaw > 2.0f * M_PI) fusedYaw -= 2.0f * M_PI;
+
+  yawAngle = fusedYaw;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ODOMETRI
+// ═══════════════════════════════════════════════════════════
+void updateOdometry() {
+  noInterrupts();
+  long ticksA = encTicksA;
+  long ticksB = encTicksB;
+  interrupts();
+
+  long dTicksA = ticksA - prevTicksA;
+  long dTicksB = ticksB - prevTicksB;
+  prevTicksA = ticksA;
+  prevTicksB = ticksB;
+
+  float dLeft   = dTicksA * METER_PER_TICK;
+  float dRight  = dTicksB * METER_PER_TICK;
+  float dCenter = (dLeft + dRight) / 2.0f;
+  float dTheta  = (dRight - dLeft) / WHEEL_BASE;
+
+  odomTheta += dTheta;
+  odomX += dCenter * cosf(odomTheta - dTheta / 2.0f);
+  odomY += dCenter * sinf(odomTheta - dTheta / 2.0f);
+  while (odomTheta >  M_PI) odomTheta -= 2.0f * M_PI;
+  while (odomTheta < -M_PI) odomTheta += 2.0f * M_PI;
+
+  // Serial.printf("\n[ODOM] X=%.3f Y=%.3f \n",
+  //   odomX, odomY);
+
+  float dt = ODOM_INTERVAL_MS / 1000.0f;
+  odomVx = dCenter / dt;
+  odomWz = dTheta  / dt;
+
+  // Serial.printf("\n[ODOM] Vx=%.3f Wz=%.3f \n",
+  //   odomVx, odomWz);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  KIRIM SENSOR DATA
+// ═══════════════════════════════════════════════════════════
+void sendSensorData() {
+  updateSensorFusion();
+  updateOdometry();
+
+  noInterrupts();
+  long ticksA = encTicksA;
+  long ticksB = encTicksB;
+  interrupts();
+
+  char buf[512];
+  int n = snprintf(buf, sizeof(buf),
+    "{"
+    "\"enc_a\":%ld,\"enc_b\":%ld,"
+    "\"ax\":%.4f,\"ay\":%.4f,\"az\":%.4f,"
+    "\"gx\":%.4f,\"gy\":%.4f,\"gz\":%.4f,"
+    "\"mx\":%.4f,\"my\":%.4f,\"mz\":%.4f,"
+    "\"heading\":%.4f,"
+    "\"roll\":%.4f,\"pitch\":%.4f,\"yaw\":%.4f,"
+    "\"odom_x\":%.4f,\"odom_y\":%.4f,"
+    "\"odom_theta\":%.4f,"
+    "\"odom_vx\":%.4f,\"odom_wz\":%.4f,"
+    "\"pwm\":%d"
+    "}",
+    ticksA, ticksB,
+    imuAccX, imuAccY, imuAccZ,
+    imuGyrX, imuGyrY, imuGyrZ,
+    magX, magY, magZ,
+    magHeading,
+    fusedRoll, fusedPitch, fusedYaw,
+    odomX, odomY, odomTheta,
+    odomVx, odomWz,
+    currentPwm
+  );
+
+  if (n >= sizeof(buf)) {
+      n = sizeof(buf) - 1; 
+  }
+
+  // IPAddress targetIP;
+  // targetIP.fromString(LAPTOP_IP);
+
+  udpSensor.beginPacket(targetIP, PORT_SENSOR);
+  udpSensor.write((uint8_t*)buf, n);
+  int r = udpSensor.endPacket();
+  Serial.printf("[SENSOR] %d bytes → %s\n", n, r ? "OK" : "FAIL");
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CMD_VEL — format UDP diperluas:
+//  {"lx":0.5,"az":0.0}          → pakai PWM saat ini
+//  {"lx":0.5,"az":0.0,"pwm":180} → update PWM dan gerak
+//  {"pwm":200}                   → hanya update PWM, tidak gerak
+// ═══════════════════════════════════════════════════════════
+void checkCmdVel() {
+  int pktSize = udpCmdVel.parsePacket();
+  if (pktSize <= 0) return;
+  char buf[128];
+  int  len = udpCmdVel.read(buf, sizeof(buf) - 1);
+  if (len <= 0) return;
+  buf[len] = '\0';
+
+  float lx = 0.0f, az = 0.0f;
+  int   pwm = -1;   // -1 = tidak ada field pwm di paket
+  char* p;
+
+  p = strstr(buf, "\"lx\":");  if (p) lx  = atof(p + 5);
+  p = strstr(buf, "\"az\":");  if (p) az  = atof(p + 5);
+  p = strstr(buf, "\"pwm\":"); if (p) pwm = atoi(p + 6);
+
+  // Update PWM jika field ada dan valid
+  if (pwm >= PWM_MIN && pwm <= PWM_MAX) {
+    currentPwm = (uint8_t)pwm;
+    Serial.printf("[CMD] PWM diperbarui → %d\n", currentPwm);
+  }
+
+  // Hanya gerak jika ada field lx atau az
+  if (strstr(buf, "\"lx\":") || strstr(buf, "\"az\":")) {
+    cmdLinear      = lx;
+    cmdAngular     = az;
+    lastCmdVelTime = millis();
+    applyCmdVel(cmdLinear, cmdAngular);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  RPLIDAR
 // ═══════════════════════════════════════════════════════════
 void rplidarSendCmd(uint8_t cmd) {
-  Serial2.write(RPLIDAR_CMD_SYNC_BYTE);
+  Serial2.write(RPLIDAR_CMD_SYNC);
   Serial2.write(cmd);
 }
 
@@ -124,360 +557,155 @@ void rplidarFlush() {
 bool rplidarWaitDescriptor(uint32_t timeoutMs = 3000) {
   uint32_t start = millis();
   uint8_t  buf[7];
-  int      idx   = 0;
-
+  int      idx = 0;
   while (millis() - start < timeoutMs) {
     if (!Serial2.available()) continue;
     uint8_t b = Serial2.read();
-
-    if (idx == 0) {
-      if (b == RPLIDAR_RESP_SYNC1) buf[idx++] = b;
-      continue;
-    }
-    if (idx == 1) {
-      if (b == RPLIDAR_RESP_SYNC2) buf[idx++] = b;
-      else idx = 0;
-      continue;
-    }
+    if (idx == 0) { if (b == RPLIDAR_SYNC1) buf[idx++] = b; continue; }
+    if (idx == 1) { if (b == RPLIDAR_SYNC2) buf[idx++] = b; else idx = 0; continue; }
     buf[idx++] = b;
     if (idx >= 7) {
-      Serial.print("[LIDAR] Descriptor: ");
-      for (int i = 0; i < 7; i++) Serial.printf("0x%02X ", buf[i]);
+      Serial.print("[LIDAR] Descriptor:");
+      for (int i = 0; i < 7; i++) Serial.printf(" 0x%02X", buf[i]);
       Serial.println();
       return true;
     }
   }
-  Serial.println("[LIDAR] Descriptor timeout!");
   return false;
 }
 
 bool rplidarStartScan() {
   Serial.println("[LIDAR] Reset...");
-  rplidarSendCmd(RPLIDAR_CMD_STOP);
-  delay(200);
-  rplidarFlush();
-
+  rplidarSendCmd(RPLIDAR_CMD_STOP); delay(200); rplidarFlush();
   rplidarSendCmd(RPLIDAR_CMD_RESET);
   Serial.print("[LIDAR] Boot");
-
-  uint32_t lastByteTime = millis();
-  uint32_t bootTimeout  = millis();
-  while (millis() - bootTimeout < 5000) {
-    if (Serial2.available()) {
-      Serial2.read();
-      lastByteTime = millis();
-    } else if (millis() - lastByteTime > 500) {
-      break;
-    }
+  uint32_t lastByte = millis(), boot = millis();
+  while (millis() - boot < 5000) {
+    if (Serial2.available()) { Serial2.read(); lastByte = millis(); }
+    else if (millis() - lastByte > 500) break;
     if (millis() % 500 < 10) Serial.print(".");
   }
-  Serial.println(" selesai");
+  Serial.println(" OK");
   rplidarFlush();
 
-  // Health check
-  rplidarSendCmd(RPLIDAR_CMD_GET_HEALTH);
-  uint8_t  hBuf[10];
-  int      hIdx  = 0;
-  bool     foundA5 = false;
-  uint32_t hStart  = millis();
+  rplidarSendCmd(RPLIDAR_CMD_HEALTH);
+  uint8_t hBuf[10]; int hIdx = 0; bool f = false;
+  uint32_t hStart = millis();
   while (millis() - hStart < 2000 && hIdx < 10) {
     if (Serial2.available()) {
       uint8_t b = Serial2.read();
-      if (!foundA5 && b == 0xA5) foundA5 = true;
-      if (foundA5) hBuf[hIdx++] = b;
+      if (!f && b == 0xA5) f = true;
+      if (f) hBuf[hIdx++] = b;
     }
   }
   if (hIdx >= 10) {
-    uint8_t status = hBuf[7];
     Serial.printf("[LIDAR] Health: %s\n",
-      status == 0 ? "GOOD" : status == 1 ? "WARNING" : "ERROR");
-    if (status == 2) return false;
+      hBuf[7] == 0 ? "GOOD" : hBuf[7] == 1 ? "WARN" : "ERROR");
+    if (hBuf[7] == 2) return false;
   }
   rplidarFlush();
 
-  // Kirim SCAN
   rplidarSendCmd(RPLIDAR_CMD_SCAN);
   if (!rplidarWaitDescriptor(5000)) return false;
 
   for (int i = 0; i < 360; i++) { scanBuffer[i] = 0; scanValid[i] = false; }
-  sampleCount   = 0;
-  lidarScanning = true;
-  Serial.println("[LIDAR] Scan dimulai ✓");
+  sampleCount = 0; lidarScanning = true;
+  Serial.println("[LIDAR] Scan ✓");
   return true;
 }
 
 void rplidarStopScan() {
-  rplidarSendCmd(RPLIDAR_CMD_STOP);
-  delay(10);
-  rplidarFlush();
-  lidarScanning = false;
-  Serial.println("[LIDAR] Scan berhenti");
+  rplidarSendCmd(RPLIDAR_CMD_STOP); delay(10);
+  rplidarFlush(); lidarScanning = false;
 }
 
 void rplidarMotorOff() {
-  rplidarSendCmd(RPLIDAR_CMD_STOP);
-  delay(100);
-  rplidarSendCmd(RPLIDAR_CMD_RESET);
-  delay(500);
+  rplidarSendCmd(RPLIDAR_CMD_STOP); delay(100);
+  rplidarSendCmd(RPLIDAR_CMD_RESET); delay(500);
   rplidarFlush();
 }
 
-bool rplidarParseScanPacket(uint8_t* pkt,
-                             float& angle_deg, float& dist_mm,
-                             bool& newScan, bool& isDataValid) {
-  uint8_t  quality  = pkt[0] >> 2;
-  bool     startBit = (pkt[0] & 0x01) != 0;
-  bool     checkBit = (pkt[1] & 0x01) != 0;
-  if (!checkBit) return false;
-
-  uint16_t angle_q6 = ((uint16_t)(pkt[2]) << 7) | (pkt[1] >> 1);
-  uint32_t dist_q2  = ((uint32_t)(pkt[4]) << 8) | pkt[3];
-
-  angle_deg   = angle_q6 / 64.0f;
-  dist_mm     = dist_q2  /  4.0f;
-  newScan     = startBit;
-  isDataValid = (quality > 0 && dist_mm >= 10.0f);
+bool rplidarParsePkt(uint8_t* p, float& ang, float& dist, bool& newScan, bool& valid) {
+  uint8_t q = p[0] >> 2;
+  bool s = p[0] & 0x01, c = p[1] & 0x01;
+  if (!c) return false;
+  uint16_t aq = ((uint16_t)p[2] << 7) | (p[1] >> 1);
+  uint32_t dq = ((uint32_t)p[4] << 8) | p[3];
+  ang = aq / 64.0f; dist = dq / 4.0f;
+  newScan = s; valid = (q > 0 && dist >= 10.0f);
   return true;
 }
 
 bool rplidarReadPackets() {
-  static uint8_t pktBuf[RPLIDAR_SCAN_PACKET_SIZE];
-  static int     pktIdx  = 0;
-  static bool    synced  = false;
-  bool fullScan = false;
-
+  static uint8_t pkt[RPLIDAR_PKT_SIZE];
+  static int idx = 0; static bool synced = false;
+  bool full = false;
   while (Serial2.available()) {
     uint8_t b = Serial2.read();
-
     if (!synced) {
-      if ((b & 0x03) == 0x01) { pktBuf[0] = b; pktIdx = 1; synced = true; }
+      if ((b & 0x03) == 0x01) { pkt[0] = b; idx = 1; synced = true; }
       continue;
     }
-
-    pktBuf[pktIdx++] = b;
-    if (pktIdx < RPLIDAR_SCAN_PACKET_SIZE) continue;
-    pktIdx = 0;
-
-    float angle_deg, dist_mm;
-    bool  newScan, isDataValid;
-    if (!rplidarParseScanPacket(pktBuf, angle_deg, dist_mm, newScan, isDataValid)) {
-      synced = false;
-      continue;
-    }
-
-    if (newScan) { fullScan = true; scanSeq++; }
-
-    if (isDataValid) {
-      int idx = (int)angle_deg % 360;
-      if (idx >= 0 && idx < 360) {
-        if (!scanValid[idx] || dist_mm < scanBuffer[idx]) {
-          scanBuffer[idx] = (uint16_t)dist_mm;
-          scanValid[idx]  = true;
-        }
+    pkt[idx++] = b;
+    if (idx < RPLIDAR_PKT_SIZE) continue;
+    idx = 0;
+    float ang, dist; bool newScan, valid;
+    if (!rplidarParsePkt(pkt, ang, dist, newScan, valid)) { synced = false; continue; }
+    if (newScan) { full = true; scanSeq++; }
+    if (valid) {
+      int i = (int)ang % 360;
+      if (i >= 0 && i < 360 && (!scanValid[i] || dist < scanBuffer[i])) {
+        scanBuffer[i] = (uint16_t)dist; scanValid[i] = true; sampleCount++;
       }
-      sampleCount++;
     }
   }
-  return fullScan;
+  return full;
 }
 
-// ═══════════════════════════════════════════════════════════
-//  KIRIM SCAN UDP
-// ═══════════════════════════════════════════════════════════
 void sendScanUDP() {
-  IPAddress targetIP;
-  targetIP.fromString(LAPTOP_IP);
-
-  // Paket 1: 0–179°
-  int offset = 0;
-  offset += snprintf(jsonBuf + offset, sizeof(jsonBuf) - offset,
+  IPAddress ip; ip.fromString(LAPTOP_IP);
+  int o = 0;
+  o += snprintf(jsonBuf+o, sizeof(jsonBuf)-o,
     "{\"seq\":%lu,\"part\":1,\"start\":0,\"distances\":[", (unsigned long)scanSeq);
   for (int i = 0; i < HALF_SCAN; i++) {
-    offset += snprintf(jsonBuf + offset, sizeof(jsonBuf) - offset,
-      "%d", scanValid[i] ? (int)scanBuffer[i] : -1);
-    if (i < HALF_SCAN - 1) jsonBuf[offset++] = ',';
+    o += snprintf(jsonBuf+o, sizeof(jsonBuf)-o, "%d", scanValid[i]?(int)scanBuffer[i]:-1);
+    if (i < HALF_SCAN-1) jsonBuf[o++] = ',';
   }
-  offset += snprintf(jsonBuf + offset, sizeof(jsonBuf) - offset, "]}");
-  udpScan.beginPacket(targetIP, PORT_SCAN);
-  udpScan.write((uint8_t*)jsonBuf, offset);
-  int r1 = udpScan.endPacket();
+  o += snprintf(jsonBuf+o, sizeof(jsonBuf)-o, "]}");
+  udpScan.beginPacket(ip, PORT_SCAN); udpScan.write((uint8_t*)jsonBuf, o);
+  int r1 = udpScan.endPacket(); delay(15);
 
-  delay(15);
-
-  // Paket 2: 180–359°
-  offset = 0;
-  offset += snprintf(jsonBuf + offset, sizeof(jsonBuf) - offset,
+  o = 0;
+  o += snprintf(jsonBuf+o, sizeof(jsonBuf)-o,
     "{\"seq\":%lu,\"part\":2,\"start\":180,\"distances\":[", (unsigned long)scanSeq);
   for (int i = HALF_SCAN; i < 360; i++) {
-    offset += snprintf(jsonBuf + offset, sizeof(jsonBuf) - offset,
-      "%d", scanValid[i] ? (int)scanBuffer[i] : -1);
-    if (i < 359) jsonBuf[offset++] = ',';
+    o += snprintf(jsonBuf+o, sizeof(jsonBuf)-o, "%d", scanValid[i]?(int)scanBuffer[i]:-1);
+    if (i < 359) jsonBuf[o++] = ',';
   }
-  offset += snprintf(jsonBuf + offset, sizeof(jsonBuf) - offset, "]}");
-  udpScan.beginPacket(targetIP, PORT_SCAN);
-  udpScan.write((uint8_t*)jsonBuf, offset);
+  o += snprintf(jsonBuf+o, sizeof(jsonBuf)-o, "]}");
+  udpScan.beginPacket(ip, PORT_SCAN); udpScan.write((uint8_t*)jsonBuf, o);
   int r2 = udpScan.endPacket();
 
-  Serial.printf("[SCAN] Seq=%lu samples=%d pkt1=%s pkt2=%s\n",
-    (unsigned long)scanSeq, sampleCount,
-    r1 ? "OK" : "FAIL", r2 ? "OK" : "FAIL");
-
+  Serial.printf("[SCAN] Seq=%lu n=%d p1=%s p2=%s\n",
+    (unsigned long)scanSeq, sampleCount, r1?"OK":"FAIL", r2?"OK":"FAIL");
   for (int i = 0; i < 360; i++) { scanBuffer[i] = 0; scanValid[i] = false; }
   sampleCount = 0;
+
+  lastScanSend = millis();
 }
 
-// ═══════════════════════════════════════════════════════════
-//  LIDAR CONTROL
-// ═══════════════════════════════════════════════════════════
 void checkLidarControl() {
-  int pktSize = udpLidar.parsePacket();
-  if (pktSize <= 0) return;
-
-  char buf[32];
-  int  len = udpLidar.read(buf, sizeof(buf) - 1);
-  if (len <= 0) return;
+  int sz = udpLidar.parsePacket(); if (sz <= 0) return;
+  char buf[32]; int len = udpLidar.read(buf, 31); if (len <= 0) return;
   buf[len] = '\0';
-
-  String cmd = String(buf);
-  cmd.trim(); cmd.toLowerCase();
-
+  String cmd = String(buf); cmd.trim(); cmd.toLowerCase();
   if (cmd == "on") {
-    if (!lidarRunning) {
-      if (rplidarStartScan()) lidarRunning = true;
-      else Serial.println("[CMD] Gagal start scan!");
-    }
+    if (!lidarRunning) { if (rplidarStartScan()) lidarRunning = true; }
   } else if (cmd == "off") {
-    if (lidarRunning) {
-      rplidarStopScan();
-      rplidarMotorOff();
-      lidarRunning = false;
-    }
+    if (lidarRunning) { rplidarStopScan(); rplidarMotorOff(); lidarRunning = false; }
   } else if (cmd == "status") {
-    Serial.printf("[STATUS] lidar=%s scanning=%s\n",
-      lidarRunning ? "ON" : "OFF", lidarScanning ? "YES" : "NO");
+    Serial.printf("[STATUS] lidar=%s pwm=%d\n", lidarRunning?"ON":"OFF", currentPwm);
   }
-}
-
-// ═══════════════════════════════════════════════════════════
-//  IMU
-// ═══════════════════════════════════════════════════════════
-void initMPU6050() {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(PWR_MGMT_1);
-  Wire.write(0x00);
-  Wire.endTransmission(true);
-  delay(100);
-}
-
-void readMPU6050() {
-  Wire.beginTransmission(MPU6050_ADDR);
-  Wire.write(ACCEL_XOUT_H);
-  Wire.endTransmission(false);
-  Wire.requestFrom((uint8_t)MPU6050_ADDR, (uint8_t)14, (uint8_t)true);
-  if (Wire.available() < 14) return;
-
-  int16_t ax = (Wire.read() << 8) | Wire.read();
-  int16_t ay = (Wire.read() << 8) | Wire.read();
-  Wire.read(); Wire.read();
-  Wire.read(); Wire.read();
-  Wire.read(); Wire.read();
-  Wire.read(); Wire.read();
-  int16_t gz = (Wire.read() << 8) | Wire.read();
-
-  accelX = ax / 16384.0f * 9.81f;
-  accelY = ay / 16384.0f * 9.81f;
-  gyroZ  = gz / 131.0f * (M_PI / 180.0f);
-}
-
-// ═══════════════════════════════════════════════════════════
-//  MOTOR
-// ═══════════════════════════════════════════════════════════
-void initMotors() {
-  ledcAttach(MOTOR_A_EN, PWM_FREQ, PWM_RES);
-  ledcAttach(MOTOR_B_EN, PWM_FREQ, PWM_RES);
-  pinMode(MOTOR_A_IN1, OUTPUT); pinMode(MOTOR_A_IN2, OUTPUT);
-  pinMode(MOTOR_B_IN1, OUTPUT); pinMode(MOTOR_B_IN2, OUTPUT);
-  digitalWrite(MOTOR_A_IN1, LOW); digitalWrite(MOTOR_A_IN2, LOW);
-  digitalWrite(MOTOR_B_IN1, LOW); digitalWrite(MOTOR_B_IN2, LOW);
-  ledcWrite(MOTOR_A_EN, 0);
-  ledcWrite(MOTOR_B_EN, 0);
-}
-
-void setMotorA(float speed) {
-  speed = constrain(speed, -1.0f, 1.0f);
-  int pwm = (int)(fabsf(speed) * 255);
-  if      (speed >  0.02f) { digitalWrite(MOTOR_A_IN1, HIGH); digitalWrite(MOTOR_A_IN2, LOW);  }
-  else if (speed < -0.02f) { digitalWrite(MOTOR_A_IN1, LOW);  digitalWrite(MOTOR_A_IN2, HIGH); }
-  else                     { digitalWrite(MOTOR_A_IN1, LOW);  digitalWrite(MOTOR_A_IN2, LOW); pwm = 0; }
-  ledcWrite(MOTOR_A_EN, pwm);
-}
-
-void setMotorB(float speed) {
-  speed = constrain(speed, -1.0f, 1.0f);
-  int pwm = (int)(fabsf(speed) * 255);
-  if      (speed >  0.02f) { digitalWrite(MOTOR_B_IN1, HIGH); digitalWrite(MOTOR_B_IN2, LOW);  }
-  else if (speed < -0.02f) { digitalWrite(MOTOR_B_IN1, LOW);  digitalWrite(MOTOR_B_IN2, HIGH); }
-  else                     { digitalWrite(MOTOR_B_IN1, LOW);  digitalWrite(MOTOR_B_IN2, LOW); pwm = 0; }
-  ledcWrite(MOTOR_B_EN, pwm);
-}
-
-void stopMotors() { setMotorA(0); setMotorB(0); }
-
-void applyCmdVel(float linear, float angular) {
-  float v_left  = (linear - angular * WHEEL_BASE / 2.0f) / MAX_SPEED_MS;
-  float v_right = (linear + angular * WHEEL_BASE / 2.0f) / MAX_SPEED_MS;
-  Serial.print("Motor A :");
-  Serial.println(v_left);
-
-  Serial.print("Motor B :");
-  Serial.println(v_right);
-  setMotorA(v_left);
-  setMotorB(v_right);
-}
-
-// ═══════════════════════════════════════════════════════════
-//  CMD_VEL
-// ═══════════════════════════════════════════════════════════
-void checkCmdVel() {
-  int pktSize = udpCmdVel.parsePacket();
-  if (pktSize <= 0) return;
-
-  char buf[128];
-  int  len = udpCmdVel.read(buf, sizeof(buf) - 1);
-  if (len <= 0) return;
-  buf[len] = '\0';
-
-  float lx = 0.0f, az = 0.0f;
-  char* p;
-  p = strstr(buf, "\"lx\":"); if (p) lx = atof(p + 5);
-  p = strstr(buf, "\"az\":"); if (p) az = atof(p + 5);
-
-  cmdLinear      = lx;
-  cmdAngular     = az;
-  lastCmdVelTime = millis();
-  applyCmdVel(cmdLinear, cmdAngular);
-}
-
-// ═══════════════════════════════════════════════════════════
-//  SENSOR PUBLISH
-// ═══════════════════════════════════════════════════════════
-void sendSensorData() {
-  readMPU6050();
-  noInterrupts();
-  long ticksA = encTicksA;
-  long ticksB = encTicksB;
-  interrupts();
-
-  char buf[256];
-  int n = snprintf(buf, sizeof(buf),
-    "{\"enc_a\":%ld,\"enc_b\":%ld,"
-    "\"gyro_z\":%.4f,"
-    "\"accel_x\":%.4f,\"accel_y\":%.4f}",
-    ticksA, ticksB, gyroZ, accelX, accelY);
-
-  udpSensor.beginPacket(LAPTOP_IP, PORT_SENSOR);
-  udpSensor.write((uint8_t*)buf, n);
-  udpSensor.endPacket();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -485,32 +713,33 @@ void sendSensorData() {
 // ═══════════════════════════════════════════════════════════
 void setup() {
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
-
   Serial.begin(115200);
   delay(300);
-  Serial.println("\n=== ESP32 Robot + RPLidar C1 ===");
+  Serial.println("\n=== ESP32 Robot + RPLidar C1 + IMU + MAG (L298N lib) ===");
 
   Wire.begin(21, 22);
   Wire.setClock(400000);
 
+  bool imuOk = initMPU6050();
+  bool magOk = initHMC5883L();
+  if (imuOk) calibrateGyro();
+
   Serial2.begin(RPLIDAR_BAUDRATE, SERIAL_8N1, RPLIDAR_RX_PIN, RPLIDAR_TX_PIN);
-  Serial.printf("[LIDAR] UART2: RX=GPIO%d TX=GPIO%d baud=%d\n",
-    RPLIDAR_RX_PIN, RPLIDAR_TX_PIN, RPLIDAR_BAUDRATE);
+  rplidarSendCmd(RPLIDAR_CMD_STOP); delay(100); rplidarFlush();
+  Serial.println("[LIDAR] Siap (OFF)");
 
-  rplidarSendCmd(RPLIDAR_CMD_STOP);
-  delay(100);
-  rplidarFlush();
-
-  initMotors();
-  Serial.println("[MOTOR] L298N siap");
+  // Inisialisasi motor dengan PWM default
+  motorA.setSpeed(PWM_DEFAULT);
+  motorB.setSpeed(PWM_DEFAULT);
+  motorA.stop();
+  motorB.stop();
+  Serial.printf("[MOTOR] L298N siap | PWM default=%d\n", PWM_DEFAULT);
 
   pinMode(ENCODER_A_PIN, INPUT);
   pinMode(ENCODER_B_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(ENCODER_A_PIN), isrEncoderA, RISING);
   attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), isrEncoderB, RISING);
-
-  initMPU6050();
-  Serial.println("[IMU] MPU6050 siap");
+  Serial.println("[ENC] Encoder siap");
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -518,14 +747,20 @@ void setup() {
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.printf("\n[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
 
-  udpLidar.begin(PORT_LIDAR);
-  udpCmdVel.begin(PORT_CMDVEL);
+  Serial.println(udpLidar.begin(PORT_LIDAR)   ? "[UDP] Lidar OK"  : "[UDP] Lidar FAIL");
+  Serial.println(udpCmdVel.begin(PORT_CMDVEL) ? "[UDP] CmdVel OK" : "[UDP] CmdVel FAIL");
+  Serial.println(udpSensor.begin(PORT_SENSOR) ? "[UDP] Sensor OK" : "[UDP] Sensor FAIL");
+  Serial.println(udpScan.begin(PORT_SCAN)     ? "[UDP] Scan OK"   : "[UDP] Scan FAIL");
 
-  Serial.println("\n=== SISTEM SIAP ===");
-  Serial.printf("PORT_LIDAR   %d  ← 'on'/'off'\n", PORT_LIDAR);
-  Serial.printf("PORT_SCAN    %d  → scan 360°\n",   PORT_SCAN);
-  Serial.printf("PORT_CMDVEL  %d  ← cmd_vel\n",     PORT_CMDVEL);
-  Serial.printf("PORT_SENSOR  %d  → IMU+encoder\n", PORT_SENSOR);
+  lastImuTime  = millis();
+
+  Serial.println("\n=== SIAP ===");
+  Serial.printf("IMU: %s | MAG: %s\n", imuOk?"OK":"FAIL", magOk?"OK":"FAIL");
+  Serial.println("Format cmd_vel UDP (port 5007):");
+  Serial.println("  {\"lx\":0.3,\"az\":0.0}           → gerak, pwm tetap");
+  Serial.println("  {\"lx\":0.3,\"az\":0.0,\"pwm\":180} → gerak + set pwm");
+  Serial.println("  {\"pwm\":200}                     → hanya set pwm");
+  Serial.println("Catatan: sesuaikan ENCODER_TPR dan WHEEL_RADIUS_M dengan hardware!");
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -535,11 +770,7 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     stopMotors();
     if (lidarRunning) { rplidarStopScan(); rplidarMotorOff(); lidarRunning = false; }
-    Serial.println("[WiFi] Terputus! Reconnect...");
-    WiFi.disconnect();
-    WiFi.reconnect();
-    delay(2000);
-    return;
+    WiFi.disconnect(); WiFi.reconnect(); delay(2000); return;
   }
 
   checkLidarControl();
@@ -549,13 +780,15 @@ void loop() {
   }
 
   checkCmdVel();
+  if (millis() - lastCmdVelTime > CMDVEL_TIMEOUT_MS) stopMotors();
 
-  if (millis() - lastCmdVelTime > CMDVEL_TIMEOUT_MS) {
-    stopMotors();
-  }
+  // Kirim sensor HANYA kalau tidak sedang kirim scan
+  // Cek dengan lastScanSend — beri jeda 20ms setelah scan
+  unsigned long now = millis();
+  bool scanRecentlySent = (now - lastScanSend < 20);
 
-  if (millis() - lastSensorSend >= SENSOR_INTERVAL_MS) {
+  if (!scanRecentlySent && now - lastSensorSend >= SENSOR_INTERVAL_MS) {
     sendSensorData();
-    lastSensorSend = millis();
+    lastSensorSend = now;
   }
 }
