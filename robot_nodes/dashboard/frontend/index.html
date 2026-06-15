@@ -30,36 +30,35 @@
                     <img id="cameraStream" src="http://127.0.0.1:5008/stream" alt="Menunggu stream Python..." />
                 </div>
             </section>
+
             <section class="panel hero">
                 <div class="panel-head">
                     <h2>Live Telemetry</h2>
                     <span id="updatedAt">No data yet</span>
                 </div>
                 <div class="metrics">
-                    <article>
-                        <span>Source</span>
-                        <strong id="sourceValue">-</strong>
-                    </article>
-                    <article>
-                        <span>Mode</span>
-                        <strong id="modeValue">-</strong>
-                    </article>
-                    <article>
-                        <span>Command</span>
-                        <strong id="commandValue">-</strong>
-                    </article>
-                    <article>
-                        <span>Target</span>
-                        <strong id="targetColorValue">-</strong>
-                    </article>
-                    <article>
-                        <span>Error</span>
-                        <strong id="errorValue">-</strong>
-                    </article>
-                    <article>
-                        <span>FPS</span>
-                        <strong id="fpsValue">-</strong>
-                    </article>
+                    <article><span>Source</span><strong id="sourceValue">-</strong></article>
+                    <article><span>Mode</span><strong id="modeValue">-</strong></article>
+                    <article><span>Command</span><strong id="commandValue">-</strong></article>
+                    <article><span>Target</span><strong id="targetColorValue">-</strong></article>
+                    <article><span>Error</span><strong id="errorValue">-</strong></article>
+                    <article><span>FPS</span><strong id="fpsValue">-</strong></article>
+                </div>
+            </section>
+
+            <section class="panel canvas-panel">
+                <div class="panel-head">
+                    <h2>Tracking Path (Drawing Board)</h2>
+                    <span class="live-indicator" style="color:#38bdf8 !important;">● MAPPING LIVE</span>
+                </div>
+                <div class="canvas-container">
+                    <canvas id="trackingCanvas"></canvas>
+                </div>
+                <div class="state-grid" style="margin-top: 18px;">
+                    <div><span>Posisi (X,Y)</span><strong id="canvasPosValue">0, 0</strong></div>
+                    <div><span>Heading (Yaw)</span><strong id="canvasHeadingValue">-°</strong></div>
+                    <div><span>Jarak Tempuh</span><strong id="canvasDistValue">0.0 m</strong></div>
+                    <div><span>Speed</span><strong id="canvasSpeedValue">0.0 m/s</strong></div>
                 </div>
             </section>
 
@@ -108,14 +107,14 @@
 
             <section class="panel map-panel">
                 <div class="panel-head">
-                    <h2>Robot State</h2>
+                    <h2>Robot State & Raw IMU</h2>
                     <span id="targetVisibleValue">Waiting</span>
                 </div>
                 <div class="state-grid">
-                    <div><span>Target X</span><strong id="targetXValue">-</strong></div>
-                    <div><span>Target Y</span><strong id="targetYValue">-</strong></div>
-                    <div><span>Area</span><strong id="targetAreaValue">-</strong></div>
-                    <div><span>Frame</span><strong id="frameValue">-</strong></div>
+                    <div><span>Vision X</span><strong id="targetXValue">-</strong></div>
+                    <div><span>Vision Y</span><strong id="targetYValue">-</strong></div>
+                    <div><span>IMU Pitch</span><strong id="imuPitchValue">-°</strong></div>
+                    <div><span>IMU Roll</span><strong id="imuRollValue">-°</strong></div>
                 </div>
             </section>
 

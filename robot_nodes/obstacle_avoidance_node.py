@@ -24,11 +24,18 @@ Parameter yang bisa diatur via ROS2:
   finish_sectors      : jumlah sektor yang harus terhalang untuk dianggap finish
   scan_topic          : topic LaserScan
   cmd_vel_topic       : topic cmd_vel output
+  
+Tambahan:
+    - Koreksi arah maju pakai data yaw dari IMU (UDP)
+    - Forward data IMU ke Web Dashboard (Node.js) via UDP
 """
 
 import rclpy
 import math
 import numpy as np
+import socket
+import json
+import threading
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import Twist
@@ -79,6 +86,15 @@ class ObstacleAvoidanceNode(Node):
         self._last_turn   = 'left'   # arah belok terakhir (untuk konsistensi)
         self._scan_count  = 0
 
+        # --- TAMBAHAN UNTUK IMU ---
+        self.kp_yaw = 1.5
+        self.udp_sensor_port = 5050
+        self.current_yaw = 0.0
+        self.target_yaw = None  # Akan di-set otomatis saat robot jalan
+        
+        threading.Thread(target=self._udp_sensor_listener, daemon=True).start()
+        # --------------------------
+
         # Timer log status
         self.create_timer(1.0, self._log_status)
 
@@ -120,6 +136,41 @@ class ObstacleAvoidanceNode(Node):
             self._publish_cmd(0.0, 0.0)
             self.get_logger().info('Obstacle avoidance: OFF')
 
+    # ══════════════════════════════════════════════════════
+    #  UDP SENSOR LISTENER (IMU YAW) & DASHBOARD FORWARDER
+    # ══════════════════════════════════════════════════════
+    def _udp_sensor_listener(self):
+        # Socket untuk menerima dari ESP32
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(('0.0.0.0', self.udp_sensor_port))
+        
+        # Socket khusus untuk mengirim data ke Web Dashboard (Node.js)
+        dash_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        
+        while rclpy.ok():
+            try:
+                data, _ = sock.recvfrom(2048)
+                payload = json.loads(data.decode('utf-8'))
+                
+                if 'yaw' in payload:
+                    self.current_yaw = payload['yaw']
+                    # Kunci target arah maju di titik pertama kali robot nyala
+                    if self.target_yaw is None:
+                        self.target_yaw = self.current_yaw
+
+                    # --- FORWARD DATA IMU KE DASHBOARD ---
+                    imu_telemetry = {
+                        "source": "imu_sensor",
+                        "mode": "navigation",
+                        "yaw": round(math.degrees(payload.get('yaw', 0)), 1),
+                        "pitch": round(math.degrees(payload.get('pitch', 0)), 1),
+                        "roll": round(math.degrees(payload.get('roll', 0)), 1),
+                        "heading": round(math.degrees(payload.get('heading', 0)), 1)
+                    }
+                    dash_sock.sendto(json.dumps(imu_telemetry).encode('utf-8'), ('127.0.0.1', 5006))
+                    
+            except Exception:
+                pass
     # ══════════════════════════════════════════════════════
     #  UTILS: ambil jarak minimum di sektor tertentu
     # ══════════════════════════════════════════════════════
@@ -246,6 +297,34 @@ class ObstacleAvoidanceNode(Node):
             self._publish_cmd(lin * 0.6, ang * 0.3)
             self._publish_state(f'STEER_LEFT FR={front_right:.2f}m')
 
+
+        else:
+            # Depan bebas — maju
+            self._state = 'FORWARD'
+            correction = 0.0
+            
+            # --- LOGIKA FORWARD BIAS (Koreksi Arah Pakai IMU) ---
+            if self.target_yaw is not None:
+                yaw_error = self.target_yaw - self.current_yaw
+                
+                # Normalisasi sudut biar nggak muter balik (rentang -PI sampai PI)
+                yaw_error = (yaw_error + math.pi) % (2 * math.pi) - math.pi
+                
+                # P-Controller: Hitung seberapa tajam harus belok balik ke arah finish
+                imu_correction = self.kp_yaw * yaw_error
+                correction = max(-ang, min(ang, imu_correction))
+            
+            # Override koreksi IMU kalau robot nyerempet tembok samping
+            if left < sd * 1.5 and right >= sd * 1.5:
+                correction = -ang * 0.2   # jauhi tembok kiri
+            elif right < sd * 1.5 and left >= sd * 1.5:
+                correction = ang * 0.2    # jauhi tembok kanan
+
+            self._publish_cmd(lin, correction)
+            self._publish_state(f'FORWARD F={front:.2f}')
+            
+        """
+        #===================================================
         else:
             # Depan bebas — maju
             self._state = 'FORWARD'
@@ -259,6 +338,8 @@ class ObstacleAvoidanceNode(Node):
             self._publish_state(
                 f'FORWARD F={front:.2f} L={left:.2f} R={right:.2f}')
 
+        #===================================================
+        """
     # ══════════════════════════════════════════════════════
     #  PUBLISH
     # ══════════════════════════════════════════════════════
