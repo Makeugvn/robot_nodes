@@ -1,118 +1,149 @@
+#!/usr/bin/env python3
 import os
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, TimerAction, IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
-import xacro
+
 
 def generate_launch_description():
-    pkg = get_package_share_directory('robot_nodes')
-
-    xacro_file = os.path.join(pkg, 'urdf', 'robot.urdf.xacro')
-    robot_desc = xacro.process_file(xacro_file).toxml()
-
-    urdf_tmp = '/tmp/robot.urdf'
-    with open(urdf_tmp, 'w') as f:
-        f.write(robot_desc)
-
-    world_file = os.path.join(pkg, 'worlds', 'corridor.sdf')
+    pkg         = get_package_share_directory('robot_nodes')
+    nav2_params = os.path.join(pkg, 'config', 'nav2_params.yaml')
+    map_file    = os.path.join(pkg, 'maps', 'map.yaml')
 
     return LaunchDescription([
 
+        # ── Static TF ──────────────────────────────────────
         Node(
-            package='robot_state_publisher',
-            executable='robot_state_publisher',
-            parameters=[{'robot_description': robot_desc,
-                         'use_sim_time': True}],
-            output='screen'
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='base_footprint_to_base_link_tf',
+            arguments=['0', '0', '0', '0', '0', '0',
+                       'base_footprint', 'base_link'],
         ),
-
-        ExecuteProcess(
-            cmd=['ign', 'gazebo', '-r', world_file],
-            output='screen'
-        ),
-
-        TimerAction(
-            period=3.0,
-            actions=[
-                ExecuteProcess(
-                    cmd=[
-                        'ros2', 'run', 'ros_ign_gazebo', 'create',
-                        '-name', 'robot',
-                        '-file', urdf_tmp,
-                        '-x', '-1.5',
-                        '-y', '0.0',
-                        '-z', '0.05',
-                    ],
-                    output='screen'
-                ),
-            ]
-        ),
-
-        # Bridge — scan TIDAK di-bridge ke ROS saat navigasi
-        # Hanya odom, cmd_vel, clock, dan tf
         Node(
-            package='ros_ign_bridge',
-            executable='parameter_bridge',
-            arguments=[
-                '/odom@nav_msgs/msg/Odometry[ignition.msgs.Odometry',
-                '/cmd_vel@geometry_msgs/msg/Twist]ignition.msgs.Twist',
-                '/clock@rosgraph_msgs/msg/Clock[ignition.msgs.Clock',
-                '/tf@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
-                '/tf_static@tf2_msgs/msg/TFMessage[ignition.msgs.Pose_V',
-            ],
-            output='screen'
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='base_link_to_laser_tf',
+            arguments=['0.05', '0', '0.10', '0', '0', '0',
+                       'base_link', 'laser'],
+        ),
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='base_link_to_imu_tf',
+            arguments=['0', '0', '0.05', '0', '0', '0',
+                       'base_link', 'imu_link'],
         ),
 
-        # Map server — load peta yang sudah disimpan
+        # ── Odometry + Lidar ───────────────────────────────
+        Node(
+            package='robot_nodes',
+            executable='odometry_node.py',
+            name='odometry_node',
+            output='screen',
+        ),
+        Node(
+            package='robot_nodes',
+            executable='rplidar_wifi.py',
+            name='lidar_serial_node',
+            parameters=[{
+                'frame_id': 'laser',
+                'range_min': 0.10,
+                'range_max': 12.0,
+            }],
+            output='screen',
+        ),
+
+        # ── cmd_vel bridge: /cmd_vel → ESP32 UDP port 5007 ─
+        Node(
+            package='robot_nodes',
+            executable='cmd_vel_bridge.py',
+            name='cmd_vel_bridge',
+            parameters=[{
+                'esp32_ip':   '192.168.100.94',
+                'esp32_port': 5007,
+            }],
+            output='screen',
+        ),
+
+        # ── Map server ─────────────────────────────────────
         Node(
             package='nav2_map_server',
             executable='map_server',
             name='map_server',
-            parameters=[{
-                'use_sim_time': True,
-                'yaml_filename': os.path.join(pkg, 'maps', 'corridor.yaml'),
-            }],
-            output='screen'
+            parameters=[
+                nav2_params,
+                {'yaml_filename': map_file},
+            ],
+            output='screen',
         ),
 
-        # Lifecycle manager khusus map server
+        # ── AMCL — broadcast TF map → odom ─────────────────
+        Node(
+            package='nav2_amcl',
+            executable='amcl',
+            name='amcl',
+            parameters=[nav2_params],
+            output='screen',
+        ),
+
+        # ── Nav2 stack ─────────────────────────────────────
+        Node(
+            package='nav2_controller',
+            executable='controller_server',
+            name='controller_server',
+            parameters=[nav2_params],
+            output='screen',
+            remappings=[('cmd_vel', '/cmd_vel')],
+        ),
+        Node(
+            package='nav2_planner',
+            executable='planner_server',
+            name='planner_server',
+            parameters=[nav2_params],
+            output='screen',
+        ),
+        Node(
+            package='nav2_behaviors',
+            executable='behavior_server',
+            name='behavior_server',
+            parameters=[nav2_params],
+            output='screen',
+        ),
+        Node(
+            package='nav2_bt_navigator',
+            executable='bt_navigator',
+            name='bt_navigator',
+            parameters=[nav2_params],
+            output='screen',
+        ),
+
+        # ── Lifecycle manager ──────────────────────────────
+        # Urutan penting: map_server → amcl → sisanya
         Node(
             package='nav2_lifecycle_manager',
             executable='lifecycle_manager',
-            name='lifecycle_manager_map',
+            name='lifecycle_manager_navigation',
+            output='screen',
             parameters=[{
-                'use_sim_time': True,
+                'use_sim_time': False,
                 'autostart': True,
-                'node_names': ['map_server'],
+                'node_names': [
+                    'map_server',
+                    'amcl',
+                    'controller_server',
+                    'planner_server',
+                    'behavior_server',
+                    'bt_navigator',
+                ],
             }],
-            output='screen'
         ),
 
-        # Nav2 dengan params khusus navigasi (tanpa laser)
-        TimerAction(
-            period=5.0,
-            actions=[
-                IncludeLaunchDescription(
-                    PythonLaunchDescriptionSource([
-                        get_package_share_directory('nav2_bringup'),
-                        '/launch/navigation_launch.py'
-                    ]),
-                    launch_arguments={
-                        'use_sim_time': 'true',
-                        'params_file': os.path.join(
-                            pkg, 'config', 'nav2_odom_only_params.yaml'),
-                        'map_subscribe_transient_local': 'true',
-                    }.items()
-                ),
-            ]
-        ),
-
+        # ── RViz2 ──────────────────────────────────────────
         Node(
             package='rviz2',
             executable='rviz2',
             name='rviz2',
-            output='screen'
+            output='screen',
         ),
     ])

@@ -68,7 +68,7 @@ class KeyboardTeleopNode(Node):
         self.declare_parameter('esp32_ip',       '192.168.100.94')
         self.declare_parameter('port_cmdvel',     5007)
         self.declare_parameter('linear_speed',    0.3)    # m/s
-        self.declare_parameter('angular_speed',   1.0)    # rad/s
+        self.declare_parameter('angular_speed',   0.5)    # rad/sx``
         self.declare_parameter('send_rate_hz',    20.0)   # Hz publish cmd_vel
         self.declare_parameter('stop_on_release', True)   # kirim stop saat tombol dilepas
 
@@ -164,7 +164,7 @@ class KeyboardTeleopNode(Node):
                     continue
 
                 elif k == ']':
-                    self.angular_speed = min(self.angular_speed + 0.1, 3.0)
+                    self.angular_speed = min(self.angular_speed + 0.1, 5.0)
                     print(f'\r  Angular speed: {self.angular_speed:.2f} rad/s  ',
                           end='', flush=True)
                     continue

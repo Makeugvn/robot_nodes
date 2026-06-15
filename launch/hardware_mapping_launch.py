@@ -54,6 +54,13 @@ def generate_launch_description():
             output='screen'
         ),
 
+        Node(
+            package='robot_nodes',
+            executable='odometry_node.py',
+            name='odometry_node',
+            output='screen'
+        ),
+
         # ── SLAM toolbox ───────────────────────────────────
         Node(
             package='slam_toolbox',

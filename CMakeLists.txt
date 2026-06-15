@@ -30,6 +30,8 @@ install(PROGRAMS
   robot_nodes/rplidar_wifi.py
   robot_nodes/manual_speed_input.py
   robot_nodes/imu_visualizer_node.py
+  robot_nodes/cmd_vel_bridge.py
+  robot_nodes/obstacle_avoidance_node.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ── Config & launch ───────────────────────────────────────

@@ -145,7 +145,7 @@ class LidarWifiNode(Node):
                     self.get_logger().warn(f'UDP recv error: {e}')
                 continue
 
-            self.get_logger().info(f'RECV {len(data)} bytes from {addr}')  # TAMBAHAN
+            # self.get_logger().info(f'RECV {len(data)} bytes from {addr}')  # TAMBAHAN
 
             try:
                 payload = json.loads(data.decode('utf-8'))
@@ -162,8 +162,8 @@ class LidarWifiNode(Node):
         start = payload.get('start',  0)
         dists = payload.get('distances', [])
 
-        self.get_logger().info(
-            f'seq={seq} part={part} start={start} n_dist={len(dists)}')
+        # self.get_logger().info(
+            # f'seq={seq} part={part} start={start} n_dist={len(dists)}')
 
         if not dists:
             return
@@ -217,11 +217,11 @@ class LidarWifiNode(Node):
             valid_r = [r for r in msg.ranges if not math.isinf(r)]
             min_r = min(valid_r) if valid_r else float('nan')
             max_r = max(valid_r) if valid_r else float('nan')
-            self.get_logger().info(
-                f'Scan #{self._scan_count} | '
-                f'{valid}/360 valid | '
-                f'min={min_r:.2f}m max={max_r:.2f}m'
-            )
+            # self.get_logger().info(
+            #     f'Scan #{self._scan_count} | '
+            #     f'{valid}/360 valid | '
+            #     f'min={min_r:.2f}m max={max_r:.2f}m'
+            # )
 
     # ══════════════════════════════════════════════════════
     #  STATUS
