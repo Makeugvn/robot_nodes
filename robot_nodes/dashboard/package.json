@@ -1,0 +1,9 @@
+{
+    "name": "robotika-dashboard",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Local dashboard for robot_nodes telemetry",
+    "scripts": {
+        "start": "node backend/server.js"
+    }
+}

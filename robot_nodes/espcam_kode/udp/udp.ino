@@ -7,7 +7,7 @@
 const char* ssid = "THINKDAN";
 const char* password = "A7-66o91";
 const char* udpAddress = "192.168.137.1"; // IPv4 Laptop ThinkPad Kamu
-const int udpPort = 5005;
+const int udpPort = 5009;
 
 WiFiUDP udp;
 
@@ -37,7 +37,7 @@ void setup() {
 
   // --- NYALAKAN LED FLASH ---
   pinMode(FLASH_LED_PIN, OUTPUT);
-  digitalWrite(FLASH_LED_PIN, HIGH); // Set ke HIGH untuk menyalakan, LOW untuk mematikan
+  digitalWrite(FLASH_LED_PIN, LOW); // Set ke HIGH untuk menyalakan, LOW untuk mematikan
   // --------------------------
 
   camera_config_t config;
