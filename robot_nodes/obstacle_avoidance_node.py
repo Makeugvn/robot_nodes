@@ -1,114 +1,77 @@
 #!/usr/bin/env python3
 """
-obstacle_avoidance_node.py
-==========================
-Reactive obstacle avoidance dari data /scan (LaserScan)
-Publish ke /cmd_vel (Twist)
-
-Strategi:
-  - Bagi scan menjadi sektor: kiri, tengah-kiri, depan, tengah-kanan, kanan
-  - Kalau depan bebas → maju
-  - Kalau depan terhalang → belok ke arah yang paling bebas
-  - Kalau semua terhalang → mundur sementara
-  - Stop saat semua sisi terhalang (finish — tembok di semua arah)
-
-Parameter yang bisa diatur via ROS2:
-  linear_speed        : kecepatan maju (m/s)
-  angular_speed       : kecepatan belok (rad/s)
-  front_clear_dist    : jarak minimum depan dianggap bebas (m)
-  side_clear_dist     : jarak minimum samping dianggap bebas (m)
-  stop_dist           : jarak terlalu dekat, harus mundur (m)
-  front_angle_width   : lebar sektor depan (derajat, kiri-kanan dari 0°)
-  side_angle_width    : lebar sektor samping (derajat)
-  finish_detect_dist  : jarak deteksi finish/tembok semua arah (m)
-  finish_sectors      : jumlah sektor yang harus terhalang untuk dianggap finish
-  scan_topic          : topic LaserScan
-  cmd_vel_topic       : topic cmd_vel output
+obstacle_avoidance_node.py (IMU + Adjustable Bias)
+==================================================
+Reactive obstacle avoidance dengan IMU, Cutoff Angle, 
+dan parameter Bias Kiri/Kanan yang bisa diatur via ROS2.
 """
 
 import rclpy
 import math
-import numpy as np
 from rclpy.node import Node
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, Imu
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 from rclpy.qos import qos_profile_sensor_data
+
+def euler_from_quaternion(x, y, z, w):
+    roll  = math.atan2(2*(w*x + y*z), 1 - 2*(x*x + y*y))
+    sinp  = 2*(w*y - z*x)
+    pitch = math.copysign(math.pi/2, sinp) if abs(sinp) >= 1 else math.asin(sinp)
+    yaw   = math.atan2(2*(w*z + x*y), 1 - 2*(y*y + z*z))
+    return roll, pitch, yaw
 
 
 class ObstacleAvoidanceNode(Node):
     def __init__(self):
         super().__init__('obstacle_avoidance_node')
 
-        # ── Parameter ──────────────────────────────────────
-        self.declare_parameter('linear_speed',      0.5)    # m/s maju
-        self.declare_parameter('angular_speed',     2.0)    # rad/s belok
-        self.declare_parameter('front_clear_dist',  0.6)    # m, depan dianggap bebas
-        self.declare_parameter('side_clear_dist',   0.4)    # m, samping dianggap bebas
-        self.declare_parameter('stop_dist',         0.25)   # m, terlalu dekat → mundur
-        self.declare_parameter('front_angle_width', 30.0)   # derajat kiri-kanan dari depan
-        self.declare_parameter('side_angle_width',  60.0)   # derajat lebar sektor samping
-        self.declare_parameter('finish_detect_dist',0.5)    # m, tembok dianggap finish
-        self.declare_parameter('finish_sectors',    5)      # jumlah sektor terhalang = finish
-        self.declare_parameter('backup_duration',   0.8)    # detik mundur
+        # ── Parameter Utama ────────────────────────────────
+        self.declare_parameter('linear_speed',      0.8)    
+        self.declare_parameter('angular_speed',     4.5)    
+        self.declare_parameter('stop_dist',         0.5)   
+        self.declare_parameter('finish_detect_dist',0.35)   # Dikecilkan agar tidak mudah finish
+        self.declare_parameter('finish_sectors',    6)      # Dinaikkan agar tidak mudah finish
         self.declare_parameter('scan_topic',        '/scan')
         self.declare_parameter('cmd_vel_topic',     '/cmd_vel')
-        self.declare_parameter('enabled',           True)   # aktif/nonaktif
+        self.declare_parameter('enabled',           True)
+        
+        # ── Parameter Tuning Navigasi ──────────────────────
+        # cutoff_angle: Sudut mati IMU. 70.0 = ketat lurus, 90.0 = lebih longgar belok.
+        self.declare_parameter('cutoff_angle',      85.0)
+        # bias_weight: Nilai > 0.0 (Bias KIRI), Nilai < 0.0 (Bias KANAN), 0.0 (Netral namun rentan bias kanan bawaan)
+        self.declare_parameter('bias_weight',       0.05)
 
         self._load_params()
 
-        # ── Publisher ──────────────────────────────────────
-        self.pub_cmd = self.create_publisher(
-            Twist, self.cmd_vel_topic, 10)
-        self.pub_state = self.create_publisher(
-            String, '/avoidance_state', 10)
+        # ── Publisher & Subscriber ─────────────────────────
+        self.pub_cmd = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.pub_state = self.create_publisher(String, '/avoidance_state', 10)
 
-        # ── Subscriber ─────────────────────────────────────
-        self.create_subscription(
-            LaserScan, self.scan_topic,
-            self._scan_cb, qos_profile_sensor_data)
+        self.create_subscription(LaserScan, self.scan_topic, self._scan_cb, qos_profile_sensor_data)
+        self.create_subscription(String, '/avoidance_enable', self._enable_cb, 10)
+        self.create_subscription(Imu, '/imu', self._imu_cb, qos_profile_sensor_data)
 
-        # Subscribe untuk enable/disable dari luar
-        self.create_subscription(
-            String, '/avoidance_enable',
-            self._enable_cb, 10)
-
-        # ── State ──────────────────────────────────────────
         self._state       = 'IDLE'
-        self._backup_time = 0.0
-        self._last_turn   = 'left'   # arah belok terakhir (untuk konsistensi)
         self._scan_count  = 0
+        self.initial_yaw  = None
+        self.current_yaw  = 0.0
 
-        # Timer log status
         self.create_timer(1.0, self._log_status)
-
-        self.get_logger().info('Obstacle Avoidance Node siap')
-        self._log_params()
+        self.get_logger().info('Obstacle Avoidance Node (Adjustable Bias) siap')
 
     def _load_params(self):
-        self.linear_speed      = self.get_parameter('linear_speed').value
-        self.angular_speed     = self.get_parameter('angular_speed').value
-        self.front_clear_dist  = self.get_parameter('front_clear_dist').value
-        self.side_clear_dist   = self.get_parameter('side_clear_dist').value
-        self.stop_dist         = self.get_parameter('stop_dist').value
-        self.front_angle_width = self.get_parameter('front_angle_width').value
-        self.side_angle_width  = self.get_parameter('side_angle_width').value
-        self.finish_detect_dist= self.get_parameter('finish_detect_dist').value
-        self.finish_sectors    = self.get_parameter('finish_sectors').value
-        self.backup_duration   = self.get_parameter('backup_duration').value
-        self.scan_topic        = self.get_parameter('scan_topic').value
-        self.cmd_vel_topic     = self.get_parameter('cmd_vel_topic').value
-        self.enabled           = self.get_parameter('enabled').value
-
-    def _log_params(self):
-        self.get_logger().info(
-            f'Params: linear={self.linear_speed}m/s '
-            f'angular={self.angular_speed}rad/s '
-            f'front_clear={self.front_clear_dist}m '
-            f'stop={self.stop_dist}m '
-            f'front_width={self.front_angle_width}° '
-            f'finish_dist={self.finish_detect_dist}m'
-        )
+        self.linear_speed       = self.get_parameter('linear_speed').value
+        self.angular_speed      = self.get_parameter('angular_speed').value
+        self.stop_dist          = self.get_parameter('stop_dist').value
+        self.finish_detect_dist = self.get_parameter('finish_detect_dist').value
+        self.finish_sectors     = self.get_parameter('finish_sectors').value
+        self.scan_topic         = self.get_parameter('scan_topic').value
+        self.cmd_vel_topic      = self.get_parameter('cmd_vel_topic').value
+        self.enabled            = self.get_parameter('enabled').value
+        
+        self.cutoff_angle       = self.get_parameter('cutoff_angle').value
+        self.bias_weight        = self.get_parameter('bias_weight').value
 
     def _enable_cb(self, msg: String):
         cmd = msg.data.strip().lower()
@@ -120,44 +83,126 @@ class ObstacleAvoidanceNode(Node):
             self._publish_cmd(0.0, 0.0)
             self.get_logger().info('Obstacle avoidance: OFF')
 
-    # ══════════════════════════════════════════════════════
-    #  UTILS: ambil jarak minimum di sektor tertentu
-    # ══════════════════════════════════════════════════════
-    def _sector_min(self, ranges, angle_min_deg, angle_max_deg,
-                    scan_angle_min, scan_angle_inc):
-        """
-        Ambil jarak minimum di sektor antara angle_min_deg dan angle_max_deg.
-        Sudut dalam derajat, 0° = depan robot.
-        LaserScan: sudut 0 = angle_min dari scan (biasanya 0 atau -π).
-        """
-        n = len(ranges)
+    def _imu_cb(self, msg: Imu):
+        o = msg.orientation
+        _, _, yaw = euler_from_quaternion(o.x, o.y, o.z, o.w)
+        if self.initial_yaw is None:
+            self.initial_yaw = yaw
+            self.get_logger().info(f'>> INITIAL YAW DIKUNCI: {math.degrees(yaw):.2f}° <<')
+        self.current_yaw = yaw
+
+    def _get_idx(self, check_deg, angle_min, angle_inc, num_ranges):
+        rad = math.radians(check_deg)
+        diff = rad - angle_min
+        while diff < 0.0:
+            diff += 2.0 * math.pi
+        while diff >= 2.0 * math.pi:
+            diff -= 2.0 * math.pi
+        idx = int(diff / angle_inc)
+        if 0 <= idx < num_ranges:
+            return idx
+        return -1
+
+    def _sector_min(self, ranges, angle_min_deg, angle_max_deg, scan_angle_min, scan_angle_inc):
         vals = []
         for deg in range(int(angle_min_deg), int(angle_max_deg) + 1):
-            rad = math.radians(deg)
-            # Index di array ranges
-            idx = int((rad - scan_angle_min) / scan_angle_inc)
-            if 0 <= idx < n:
+            idx = self._get_idx(deg, scan_angle_min, scan_angle_inc, len(ranges))
+            if idx != -1:
                 r = ranges[idx]
                 if not math.isinf(r) and not math.isnan(r) and r > 0.05:
                     vals.append(r)
         return min(vals) if vals else float('inf')
 
-    def _sector_avg(self, ranges, angle_min_deg, angle_max_deg,
-                    scan_angle_min, scan_angle_inc):
-        """Rata-rata jarak di sektor."""
-        n = len(ranges)
-        vals = []
-        for deg in range(int(angle_min_deg), int(angle_max_deg) + 1):
-            rad = math.radians(deg)
-            idx = int((rad - scan_angle_min) / scan_angle_inc)
-            if 0 <= idx < n:
-                r = ranges[idx]
-                if not math.isinf(r) and not math.isnan(r) and r > 0.05:
-                    vals.append(r)
-        return sum(vals)/len(vals) if vals else float('inf')
-
     # ══════════════════════════════════════════════════════
-    #  SCAN CALLBACK — logika utama
+    #  LOGIKA FIND THE GAP (IMU + Corridor Mode)
+    # ══════════════════════════════════════════════════════
+    def _best_direction_imu(self, ranges, scan_angle_min, scan_angle_inc):
+        target_deg = 0.0 
+        if self.initial_yaw is not None:
+            heading_error_rad = self.initial_yaw - self.current_yaw
+            heading_error_rad = math.atan2(math.sin(heading_error_rad), math.cos(heading_error_rad))
+            target_deg = math.degrees(heading_error_rad)
+
+        best_score = -9999.0
+        best_angle = 0
+
+        # Tarik nilai parameter bias (aman dari error jika parameter belum dideklarasi ulang)
+        try:
+             current_bias = self.get_parameter('bias_weight').value
+             current_cutoff = self.get_parameter('cutoff_angle').value
+        except rclpy.exceptions.ParameterNotDeclaredException:
+             current_bias = self.bias_weight
+             current_cutoff = self.cutoff_angle
+
+        # ── 1. DETEKSI LORONG (CORRIDOR MODE) ──
+        # Cek sisi Kiri (30° s.d 90°) dan Kanan (-90° s.d -30°)
+        dist_left  = self._sector_min(ranges, 30, 90, scan_angle_min, scan_angle_inc)
+        dist_right = self._sector_min(ranges, -90, -30, scan_angle_min, scan_angle_inc)
+        
+        # Jika kedua bahu robot diapit pilar pada jarak < 0.6 meter
+        is_in_corridor = (dist_left < 0.6 and dist_right < 0.6)
+
+        for candidate_deg in range(-90, 90, 2):
+            score_sum = 0.0
+            valid_rays = 0
+            is_blocked = False 
+
+            for offset in range(-4, 5, 1):
+                check_deg = candidate_deg + offset
+                idx = self._get_idx(check_deg, scan_angle_min, scan_angle_inc, len(ranges))
+                
+                if idx != -1:
+                    r = ranges[idx]
+                    
+                    if not math.isnan(r) and not math.isinf(r) and r < 0.3:
+                        is_blocked = True
+                        break 
+                        
+                    if math.isnan(r) or math.isinf(r) or r > 2.0:
+                        score_sum += 2.0
+                    else:
+                        score_sum += r
+                        
+                    valid_rays += 1
+
+            if is_blocked or valid_rays == 0:
+                continue
+
+            avg_distance = score_sum / valid_rays
+
+            # Pembobotan IMU (Cutoff Dinamis)
+            diff_deg = candidate_deg - target_deg
+            safe_cutoff = max(1.0, current_cutoff)
+            scaled_diff = (abs(diff_deg) / safe_cutoff) * 90.0
+            
+            imu_weight = math.cos(math.radians(scaled_diff))
+            imu_weight = max(0.0, imu_weight)
+
+            final_score = avg_distance * imu_weight
+            
+            # Tie-Breaker (Meminimalkan Putaran)
+            final_score -= (abs(candidate_deg) * 0.001)
+
+            # Aplikasi Parameter Bias
+            if current_bias > 0.0 and candidate_deg > 0:
+                final_score += current_bias
+            elif current_bias < 0.0 and candidate_deg < 0:
+                final_score += abs(current_bias)
+
+            # ── 2. EKSEKUSI BONUS LORONG ──
+            # Jika sedang diapit pilar Kiri & Kanan, beri poin super masif (+10.0)
+            # HANYA untuk arah lurus (0°).
+            # Karena skor normal maksimal hanya ~2.0, arah 0° pasti menang telak!
+            if is_in_corridor and candidate_deg == 0:
+                final_score += 10.0
+
+            if final_score > best_score:
+                best_score = final_score
+                best_angle = candidate_deg
+
+        return best_angle
+    # ══════════════════════════════════════════════════════
+    #  SCAN CALLBACK
     # ══════════════════════════════════════════════════════
     def _scan_cb(self, msg: LaserScan):
         if not self.enabled:
@@ -165,33 +210,14 @@ class ObstacleAvoidanceNode(Node):
 
         self._scan_count += 1
         ranges        = msg.ranges
-        angle_min     = msg.angle_min      # radian
-        angle_inc     = msg.angle_increment  # radian per index
+        angle_min     = msg.angle_min      
+        angle_inc     = msg.angle_increment
 
-        fw  = self.front_angle_width
-        sw  = self.side_angle_width
-
-        # ── Hitung jarak minimum per sektor ────────────────
-        # Depan: -fw° sampai +fw° dari 0°
-        front      = self._sector_min(ranges, -fw,    +fw,    angle_min, angle_inc)
-        # Kiri: fw° sampai fw+sw°
-        left       = self._sector_min(ranges, fw,     fw+sw,  angle_min, angle_inc)
-        # Kanan: -(fw+sw)° sampai -fw°
-        right      = self._sector_min(ranges, -(fw+sw), -fw,  angle_min, angle_inc)
-        # Depan-kiri: 0° sampai fw°
-        front_left = self._sector_min(ranges, 0,      fw,     angle_min, angle_inc)
-        # Depan-kanan: -fw° sampai 0°
-        front_right= self._sector_min(ranges, -fw,    0,      angle_min, angle_inc)
-        # Belakang: 150° sampai 210° (atau -150° sampai -210°)
-        back       = self._sector_min(ranges, 150,    180,    angle_min, angle_inc)
-
-        # ── Deteksi FINISH: semua arah terhalang ───────────
-        # Bagi 360° jadi 8 sektor, hitung berapa yang terhalang
         blocked = 0
         sector_size = 45
         for start in range(-180, 180, sector_size):
-            d = self._sector_min(ranges, start, start+sector_size,
-                                  angle_min, angle_inc)
+            d = self._sector_min(ranges, start, start+sector_size, angle_min, angle_inc)
+            # Menggunakan parameter yang sudah diload
             if d < self.finish_detect_dist:
                 blocked += 1
 
@@ -201,67 +227,37 @@ class ObstacleAvoidanceNode(Node):
             self._publish_state('FINISH')
             return
 
-        # ── Logika gerak ───────────────────────────────────
-        fd  = self.front_clear_dist
-        sd  = self.side_clear_dist
-        std = self.stop_dist
-        lin = self.linear_speed
-        ang = self.angular_speed
-
-        if front < std:
-            # Terlalu dekat — mundur
+        front_min = self._sector_min(ranges, -15, 15, angle_min, angle_inc)
+        if front_min < self.stop_dist:
             self._state = 'BACKUP'
-            self._publish_cmd(-lin * 0.5, 0.0)
-            self._publish_state(f'BACKUP front={front:.2f}m')
+            self._publish_cmd(-self.linear_speed * 1.0, 0.0)
+            self._publish_state(f'BACKUP (Front: {front_min:.2f}m)')
+            return
 
-        elif front < fd:
-            # Depan terhalang — tentukan arah belok
-            if left > right:
-                # Kiri lebih bebas
-                self._state    = 'TURN_LEFT'
-                self._last_turn = 'left'
-                # Kecepatan belok proporsional dengan seberapa terhalang depan
-                turn_strength = ang * (1.0 - front / fd)
-                self._publish_cmd(0.0, turn_strength)
-                self._publish_state(
-                    f'TURN_LEFT L={left:.2f} R={right:.2f} F={front:.2f}')
-            else:
-                # Kanan lebih bebas
-                self._state    = 'TURN_RIGHT'
-                self._last_turn = 'right'
-                turn_strength  = ang * (1.0 - front / fd)
-                self._publish_cmd(0.0, -turn_strength)
-                self._publish_state(
-                    f'TURN_RIGHT L={left:.2f} R={right:.2f} F={front:.2f}')
+        best_angle_deg = self._best_direction_imu(ranges, angle_min, angle_inc)
+        best_angle_rad = math.radians(best_angle_deg)
 
-        elif front_left < sd and front_right >= sd:
-            # Kiri-depan terhalang, geser kanan sedikit
-            self._state = 'STEER_RIGHT'
-            self._publish_cmd(lin * 0.6, -ang * 0.3)
-            self._publish_state(f'STEER_RIGHT FL={front_left:.2f}m')
+        Kp = 1.5 
+        angular_z = Kp * best_angle_rad
+        angular_z = max(-self.angular_speed, min(self.angular_speed, angular_z))
 
-        elif front_right < sd and front_left >= sd:
-            # Kanan-depan terhalang, geser kiri sedikit
-            self._state = 'STEER_LEFT'
-            self._publish_cmd(lin * 0.6, ang * 0.3)
-            self._publish_state(f'STEER_LEFT FR={front_right:.2f}m')
-
+        front_min_check = self._sector_min(ranges, -20, 20, angle_min, angle_inc)
+        
+        if front_min_check < 0.45 and abs(best_angle_deg) > 15:
+            linear_x = 0.0
+            self._state = f'TURN_IN_PLACE (Target: {best_angle_deg}°)'
         else:
-            # Depan bebas — maju
-            self._state = 'FORWARD'
-            # Slight correction kalau mendekati dinding samping
-            correction = 0.0
-            if left < sd * 1.5 and right >= sd * 1.5:
-                correction = -ang * 0.15   # terlalu dekat kiri, belok kanan sedikit
-            elif right < sd * 1.5 and left >= sd * 1.5:
-                correction = ang * 0.15    # terlalu dekat kanan, belok kiri sedikit
-            self._publish_cmd(lin, correction)
-            self._publish_state(
-                f'FORWARD F={front:.2f} L={left:.2f} R={right:.2f}')
+            speed_factor = max(0.0, 1.0 - (abs(best_angle_deg) / 70.0))
+            linear_x = self.linear_speed * speed_factor
 
-    # ══════════════════════════════════════════════════════
-    #  PUBLISH
-    # ══════════════════════════════════════════════════════
+            if front_min_check < 0.45 and abs(best_angle_deg) > 25:
+                linear_x = 0.0
+
+            self._state = f'FOLLOW_GAP (Target: {best_angle_deg}°)'
+
+        self._publish_cmd(linear_x, angular_z)
+        self._publish_state(self._state)
+
     def _publish_cmd(self, linear: float, angular: float):
         msg = Twist()
         msg.linear.x  = float(linear)
@@ -275,15 +271,11 @@ class ObstacleAvoidanceNode(Node):
 
     def _log_status(self):
         if self._scan_count > 0:
-            self.get_logger().info(
-                f'State: {self._state} | '
-                f'Scans: {self._scan_count} | '
-                f'Enabled: {self.enabled}')
+            self.get_logger().info(f'State: {self._state}')
 
     def destroy_node(self):
         self._publish_cmd(0.0, 0.0)
         super().destroy_node()
-
 
 def main(args=None):
     rclpy.init(args=args)
@@ -298,7 +290,6 @@ def main(args=None):
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()

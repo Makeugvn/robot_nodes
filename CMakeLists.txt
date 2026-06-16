@@ -32,6 +32,10 @@ install(PROGRAMS
   robot_nodes/imu_visualizer_node.py
   robot_nodes/cmd_vel_bridge.py
   robot_nodes/obstacle_avoidance_node.py
+  robot_nodes/obstacle_visualizer_node.py
+  robot_nodes/grid_map.py
+  robot_nodes/path_planner.py
+  robot_nodes/grid_navigator_node.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ── Config & launch ───────────────────────────────────────
