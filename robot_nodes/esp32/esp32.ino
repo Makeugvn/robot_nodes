@@ -97,6 +97,7 @@ unsigned long lastScanSend   = 0;
 // PWM aktif saat ini (bisa diubah via UDP)
 uint8_t currentPwm = PWM_DEFAULT;
 
+/*
 // ═══════════════════════════════════════════════════════════
 //  ENCODER
 // ═══════════════════════════════════════════════════════════
@@ -111,6 +112,7 @@ long prevTicksB = 0;
 #define WHEEL_RADIUS_M    0.033f
 #define ENCODER_TPR       20.0f
 #define METER_PER_TICK    (2.0f * M_PI * WHEEL_RADIUS_M / ENCODER_TPR)
+*/
 
 // ═══════════════════════════════════════════════════════════
 //  MPU6050
@@ -150,6 +152,7 @@ float magX = 0, magY = 0, magZ = 0;
 float magOffsetX = 0.0f, magOffsetY = 0.0f, magOffsetZ = 0.0f;
 float magHeading = 0.0f;
 
+/*
 // ═══════════════════════════════════════════════════════════
 //  ODOMETRI
 // ═══════════════════════════════════════════════════════════
@@ -159,6 +162,7 @@ float odomTheta = 0.0f;
 float odomVx    = 0.0f;
 float odomWz    = 0.0f;
 #define ODOM_INTERVAL_MS  50
+*/
 
 // ═══════════════════════════════════════════════════════════
 //  UDP + TIMING
@@ -182,6 +186,8 @@ bool     scanValid[360];
 int      sampleCount = 0;
 char     jsonBuf[1600];
 
+
+/*
 // ═══════════════════════════════════════════════════════════
 //  ISR ENCODER
 // ═══════════════════════════════════════════════════════════
@@ -194,6 +200,8 @@ void IRAM_ATTR isrEncoderB() {
   if      (digitalRead(MOTOR_B_IN1) == HIGH && digitalRead(MOTOR_B_IN2) == LOW)  encTicksB++;
   else if (digitalRead(MOTOR_B_IN1) == LOW  && digitalRead(MOTOR_B_IN2) == HIGH) encTicksB--;
 }
+*/
+
 
 // ═══════════════════════════════════════════════════════════
 //  MOTOR — via L298N library
@@ -418,6 +426,8 @@ void updateSensorFusion() {
   yawAngle = fusedYaw;
 }
 
+
+/*
 // ═══════════════════════════════════════════════════════════
 //  ODOMETRI
 // ═══════════════════════════════════════════════════════════
@@ -453,41 +463,38 @@ void updateOdometry() {
   // Serial.printf("\n[ODOM] Vx=%.3f Wz=%.3f \n",
   //   odomVx, odomWz);
 }
+  */
 
 // ═══════════════════════════════════════════════════════════
 //  KIRIM SENSOR DATA
 // ═══════════════════════════════════════════════════════════
 void sendSensorData() {
   updateSensorFusion();
-  updateOdometry();
+
+  /*
+updateOdometry();
 
   noInterrupts();
   long ticksA = encTicksA;
   long ticksB = encTicksB;
   interrupts();
+*/
 
   char buf[512];
   int n = snprintf(buf, sizeof(buf),
     "{"
-    "\"enc_a\":%ld,\"enc_b\":%ld,"
     "\"ax\":%.4f,\"ay\":%.4f,\"az\":%.4f,"
     "\"gx\":%.4f,\"gy\":%.4f,\"gz\":%.4f,"
     "\"mx\":%.4f,\"my\":%.4f,\"mz\":%.4f,"
     "\"heading\":%.4f,"
     "\"roll\":%.4f,\"pitch\":%.4f,\"yaw\":%.4f,"
-    "\"odom_x\":%.4f,\"odom_y\":%.4f,"
-    "\"odom_theta\":%.4f,"
-    "\"odom_vx\":%.4f,\"odom_wz\":%.4f,"
     "\"pwm\":%d"
     "}",
-    ticksA, ticksB,
     imuAccX, imuAccY, imuAccZ,
     imuGyrX, imuGyrY, imuGyrZ,
     magX, magY, magZ,
     magHeading,
     fusedRoll, fusedPitch, fusedYaw,
-    odomX, odomY, odomTheta,
-    odomVx, odomWz,
     currentPwm
   );
 
@@ -735,11 +742,15 @@ void setup() {
   motorB.stop();
   Serial.printf("[MOTOR] L298N siap | PWM default=%d\n", PWM_DEFAULT);
 
+/*
+// Block Encoder
   pinMode(ENCODER_A_PIN, INPUT);
   pinMode(ENCODER_B_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(ENCODER_A_PIN), isrEncoderA, RISING);
   attachInterrupt(digitalPinToInterrupt(ENCODER_B_PIN), isrEncoderB, RISING);
   Serial.println("[ENC] Encoder siap");
+*/
+
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);

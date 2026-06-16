@@ -9,7 +9,7 @@ import time
 # --- ROS 2 Imports ---
 import rclpy
 from sensor_msgs.msg import Image
-from cv_bridge import CvBridge
+from cv_bridge import CvBridgewsl --install
 
 # Matikan spam log error biner dari OpenCV libjpeg
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"

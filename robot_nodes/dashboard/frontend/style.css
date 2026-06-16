@@ -1,0 +1,360 @@
+:root {
+    color-scheme: dark;
+    --bg: #08111f;
+    --bg-soft: rgba(13, 22, 39, 0.88);
+    --panel: rgba(16, 26, 46, 0.94);
+    --panel-border: rgba(145, 168, 255, 0.18);
+    --text: #eef3ff;
+    --muted: #9fb0d1;
+    --accent: #38bdf8;
+    --accent-2: #22c55e;
+    --accent-3: #f97316;
+    --shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: "Segoe UI", Arial, sans-serif;
+    background:
+        radial-gradient(circle at top left, rgba(56, 189, 248, 0.22), transparent 24%),
+        radial-gradient(circle at top right, rgba(34, 197, 94, 0.16), transparent 22%),
+        linear-gradient(160deg, #050b15 0%, #0b1424 48%, #0f172a 100%);
+    color: var(--text);
+}
+
+.shell {
+    width: min(1280px, calc(100vw - 32px));
+    margin: 0 auto;
+    padding: 28px 0 40px;
+}
+
+.topbar {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.eyebrow {
+    margin: 0 0 6px;
+    color: var(--accent);
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+}
+
+h1,
+h2,
+p {
+    margin: 0;
+}
+
+h1 {
+    font-size: clamp(2rem, 5vw, 3.4rem);
+}
+
+.subtitle {
+    max-width: 760px;
+    margin-top: 10px;
+    color: var(--muted);
+}
+
+.status-chip {
+    padding: 12px 16px;
+    border-radius: 999px;
+    background: rgba(56, 189, 248, 0.14);
+    color: #bdeaff;
+    border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
+/* 1. Pengaturan Grid Utama */
+.grid {
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    /* Proporsi Lebar Kolom 1 dan Kolom 2 */
+    column-gap: 24px;
+    align-items: start;
+}
+
+/* 2. Obat panel nempel */
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 22px;
+    box-shadow: var(--shadow);
+    padding: 20px;
+    backdrop-filter: blur(14px);
+    margin-bottom: 24px !important;
+}
+
+/* 3. Formasi Kolom Kiri */
+.video-panel,
+.hero {
+    grid-column: 1 / 2;
+}
+
+/* 4. Formasi Kolom Kanan */
+.canvas-panel,
+.control-panel,
+.track-panel,
+.map-panel,
+.log-panel {
+    grid-column: 2 / 3;
+}
+
+.panel-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+    margin-bottom: 18px;
+}
+
+.panel-head span {
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+/* STYLING KAMERA */
+.video-container {
+    width: 100%;
+    aspect-ratio: 16/9;
+    background: #000;
+    border-radius: 14px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.video-container img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+/* STYLING CANVAS (DRAWING BOARD BARU) */
+.canvas-container {
+    width: 100%;
+    aspect-ratio: 16/9;
+    background: #f8fafc;
+    /* Warna putih gading seperti kertas */
+    border-radius: 14px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    position: relative;
+    box-shadow: inset 0 4px 10px rgba(0, 0, 0, 0.5);
+}
+
+.canvas-container canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.live-indicator {
+    color: #ef4444 !important;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    animation: blink 2s infinite;
+}
+
+@keyframes blink {
+
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.4;
+    }
+}
+
+.metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.state-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.metrics article,
+.state-grid div {
+    padding: 16px;
+    border-radius: 18px;
+    background: var(--bg-soft);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.metrics span,
+.state-grid span {
+    display: block;
+    color: var(--muted);
+    font-size: 0.8rem;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.metrics strong,
+.state-grid strong {
+    font-size: 1.15rem;
+}
+
+.control-help {
+    color: var(--muted);
+    margin-bottom: 16px;
+    line-height: 1.5;
+}
+
+.target-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.target-btn {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    min-height: 62px;
+    color: #f8fbff;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
+}
+
+.target-btn:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.06);
+}
+
+.target-btn.is-active {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 16px 30px rgba(0, 0, 0, 0.24);
+}
+
+.target-red {
+    background: linear-gradient(135deg, #ef4444, #dc2626);
+}
+
+.target-green {
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.target-blue {
+    background: linear-gradient(135deg, #38bdf8, #2563eb);
+}
+
+.control-status {
+    margin-top: 14px;
+    color: var(--muted);
+    font-size: 0.95rem;
+}
+
+.track {
+    display: grid;
+    gap: 14px;
+}
+
+.track-row {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 14px;
+    align-items: center;
+}
+
+.track-label {
+    color: var(--muted);
+}
+
+.track-bar {
+    position: relative;
+    height: 16px;
+    background: rgba(255, 255, 255, 0.07);
+    border-radius: 999px;
+    overflow: hidden;
+}
+
+.track-fill {
+    width: 18%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--accent), #60a5fa);
+    transition: width 220ms ease;
+}
+
+.track-fill.accent {
+    background: linear-gradient(90deg, #22c55e, #86efac);
+}
+
+.track-fill.finish {
+    background: linear-gradient(90deg, #f97316, #f59e0b);
+}
+
+.log-list {
+    display: grid;
+    gap: 10px;
+    max-height: 260px;
+    overflow: auto;
+}
+
+.log-item {
+    padding: 14px 16px;
+    border-radius: 16px;
+    background: var(--bg-soft);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.log-item strong {
+    display: block;
+    margin-bottom: 6px;
+}
+
+.log-item span {
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+@media (max-width: 960px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+
+    .video-panel,
+    .canvas-panel,
+    .hero,
+    .control-panel,
+    .track-panel,
+    .map-panel,
+    .log-panel {
+        grid-column: auto;
+    }
+
+    .metrics {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .track-row {
+        grid-template-columns: 1fr;
+    }
+
+    .target-buttons {
+        grid-template-columns: 1fr;
+    }
+}
