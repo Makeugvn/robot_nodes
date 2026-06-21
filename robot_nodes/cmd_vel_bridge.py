@@ -13,7 +13,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from rclpy.qos import qos_profile_system_default
 
-ESP32_IP   = '192.168.100.94'
+ESP32_IP   = '10.146.174.127'
 ESP32_PORT = 5007
 
 

@@ -65,7 +65,7 @@ class KeyboardTeleopNode(Node):
         super().__init__('keyboard_teleop_node')
 
         # ── Parameter ──────────────────────────────────────────
-        self.declare_parameter('esp32_ip',       '192.168.100.94')
+        self.declare_parameter('esp32_ip',       '10.146.174.127')
         self.declare_parameter('port_cmdvel',     5007)
         self.declare_parameter('linear_speed',    0.3)    # m/s
         self.declare_parameter('angular_speed',   0.5)    # rad/sx``

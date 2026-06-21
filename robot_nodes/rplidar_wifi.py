@@ -30,7 +30,7 @@ class LidarWifiNode(Node):
         super().__init__('lidar_wifi_node')
 
         # ── Parameter ──────────────────────────────────────
-        self.declare_parameter('esp32_ip',    '192.168.100.94')
+        self.declare_parameter('esp32_ip',    '10.146.174.127')
         self.declare_parameter('port_lidar',   5005)   # kirim on/off ke ESP32
         self.declare_parameter('port_scan',    5006)   # terima scan dari ESP32
         self.declare_parameter('frame_id',    'laser')

@@ -36,6 +36,7 @@ install(PROGRAMS
   robot_nodes/grid_map.py
   robot_nodes/path_planner.py
   robot_nodes/grid_navigator_node.py
+  robot_nodes/visual_tracker_node.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ── Config & launch ───────────────────────────────────────

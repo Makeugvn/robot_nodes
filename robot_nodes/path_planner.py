@@ -9,7 +9,24 @@ import heapq
 import numpy as np
 from grid_map import ARENA_MAP, ROWS, COLS, CELL_SIZE, is_free, print_map
 
-MANUAL_PATH = np.array([
+MANUAL_PATH_1 = np.array([
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 0
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 1
+    [0, 1, 1, 0, 0, 0, 0, 0, 0],   # Row 2
+    [0, 1, 0, 0, 0, 0, 0, 0, 0],   # Row 3
+    [0, 1, 0, 0, 0, 0, 0, 0, 0],   # Row 4
+    [0, 1, 1, 0, 0, 0, 0, 0, 0],   # Row 5
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 6
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 7
+    [0, 1, 1, 0, 0, 0, 0, 0, 0],   # Row 8
+    [0, 1, 0, 0, 0, 0, 0, 0, 0],   # Row 9
+    [0, 1, 0, 0, 0, 0, 0, 0, 0],   # Row 10
+    [0, 1, 1, 0, 0, 0, 0, 0, 0],   # Row 11
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 12
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],   # Row 13
+])
+
+MANUAL_PATH_2 = np.array([
     [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 0
     [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 1
     [0, 0, 0, 0, 0, 0, 1, 1, 0],   # Row 2
@@ -20,8 +37,42 @@ MANUAL_PATH = np.array([
     [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 7
     [0, 0, 0, 0, 0, 0, 1, 1, 0],   # Row 8
     [0, 0, 0, 0, 0, 0, 0, 1, 0],   # Row 9
-    [0, 0, 0, 0, 0, 0, 1, 1, 0],   # Row 10
+    [0, 0, 0, 0, 0, 0, 0, 1, 0],   # Row 10
+    [0, 0, 0, 0, 0, 0, 1, 1, 0],   # Row 11
+    [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 12
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],   # Row 13
+])
+
+MANUAL_PATH_3 = np.array([
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 0
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 1
+    [0, 1, 1, 0, 0, 0, 0, 0, 0],   # Row 2
+    [0, 1, 0, 0, 0, 0, 0, 0, 0],   # Row 3
+    [0, 1, 0, 0, 0, 0, 0, 0, 0],   # Row 4
+    [0, 1, 1, 0, 0, 0, 0, 0, 0],   # Row 5
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 6
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 7
+    [0, 0, 1, 1, 1, 0, 0, 0, 0],   # Row 8
+    [0, 0, 0, 0, 1, 0, 0, 0, 0],   # Row 9
+    [0, 0, 0, 0, 1, 1, 1, 0, 0],   # Row 10
     [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 11
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],   # Row 12
+    [0, 0, 0, 0, 0, 0, 0, 0, 0],   # Row 13
+])
+
+MANUAL_PATH_4 = np.array([
+    [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 0
+    [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 1
+    [0, 0, 0, 0, 0, 0, 1, 1, 0],   # Row 2
+    [0, 0, 0, 0, 0, 0, 0, 1, 0],   # Row 3
+    [0, 0, 0, 0, 0, 0, 0, 1, 0],   # Row 4
+    [0, 0, 0, 0, 0, 0, 1, 1, 0],   # Row 5
+    [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 6
+    [0, 0, 0, 0, 0, 0, 1, 0, 0],   # Row 7
+    [0, 0, 0, 0, 1, 1, 1, 1, 0],   # Row 8
+    [0, 0, 0, 0, 1, 0, 0, 0, 0],   # Row 9
+    [0, 0, 1, 1, 1, 0, 0, 0, 0],   # Row 10
+    [0, 0, 1, 0, 0, 0, 0, 0, 0],   # Row 11
     [0, 0, 0, 0, 0, 0, 0, 0, 0],   # Row 12
     [0, 0, 0, 0, 0, 0, 0, 0, 0],   # Row 13
 ])
@@ -269,10 +320,10 @@ def direction_to_yaw(direction: str) -> float:
 
 if __name__ == '__main__':
     # Test A*
-    from grid_map import START_ROBOT2, FINISH_ROBOT2, print_map
-    path = get_path(START_ROBOT2, FINISH_ROBOT2, manual_matrix=MANUAL_PATH, obstacle_margin=0)
+    from grid_map import START_ROBOT1, FINISH_ROBOT1, print_map, START_ROBOT2, FINISH_ROBOT2, START_ROBOT3, FINISH_ROBOT3, START_ROBOT4, FINISH_ROBOT4
+    path = get_path(START_ROBOT3, FINISH_ROBOT3, manual_matrix=MANUAL_PATH_3, obstacle_margin=0)
     
     print(f"\nPath: {path}")
     commands = path_to_relative_commands(path, initial_heading='S')
     print(f"Perintah Kemudi: {commands}")
-    print_map(path=path, robot_pos=START_ROBOT2)
+    print_map(path=path, robot_pos=START_ROBOT3)

@@ -22,10 +22,10 @@ ARENA_MAP = np.array([
     [0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0],   # row 0
-    [0, 0, 0, 0, 0, 0, 1, 0, 0],   # row 1  ← obstacle atas
+    [0, 0, 1, 0, 0, 0, 1, 0, 0],   # row 1  ← obstacle atas
     [0, 0, 0, 0, 0, 0, 0, 0, 0],   # row 2
     [0, 0, 0, 0, 0, 0, 0, 0, 0],   # row 3
-    [0, 0, 0, 0, 1, 0, 0, 1, 0],   # row 4  ← obstacle tengah atas
+    [0, 1, 0, 0, 1, 0, 0, 1, 0],   # row 4  ← obstacle tengah atas
     [0, 0, 0, 0, 0, 0, 0, 0, 0],   # row 5
     [0, 0, 0, 0, 0, 0, 0, 0, 0],   # row 6
     [0, 0, 1, 0, 0, 0, 1, 0, 0],   # row 7  ← obstacle tengah bawah
@@ -39,12 +39,16 @@ ROWS, COLS = ARENA_MAP.shape
 
 # ── Posisi start dan finish ─────────────────────────────────
 # Robot 1: baris atas, Robot 2: baris bawah
-START_ROBOT1 = (0, 0)    # pojok kiri atas
+START_ROBOT1 = (0, 2)    # pojok kiri atas
 START_ROBOT2 = (0, 6)    # tengah kiri (estimasi Robot 2)
+START_ROBOT3 = (0, 2)    # pojok kiri atas
+START_ROBOT4 = (0, 6)    # tengah kiri (estimasi Robot 2)
 
 # Finish: pojok kanan
-FINISH_ROBOT1 = (0, 8)   # pojok kanan atas
-FINISH_ROBOT2 = (11, 6)   # tengah kanan
+FINISH_ROBOT1 = (10, 2)   # pojok kanan atas
+FINISH_ROBOT2 = (10, 6)   # tengah kanan
+FINISH_ROBOT3 = (10, 6)   # pojok kanan atas
+FINISH_ROBOT4 = (10, 2)   # tengah kanan
 
 # ── Path manual (opsional) ─────────────────────────────────
 # Isi dengan matriks 12x9 dimana 1 = waypoint yang harus dilalui
